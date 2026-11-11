@@ -1,6 +1,7 @@
 mod collect;
 pub mod model;
 mod query;
+mod ui;
 
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
@@ -48,7 +49,7 @@ impl From<CliSort> for SortBy {
 #[command(
     name = "pspp",
     version,
-    about = "ps++ memory query mode (TUI milestone pending)",
+    about = "ps++ memory viewer and query tool",
     long_about = "pspp groups process memory by parent/child relationships.\n\
                   PATTERN is a case-insensitive substring match on COMM.\n\
                   Regex-style !prefix patterns are not yet supported."
@@ -86,6 +87,14 @@ struct Cli {
         help = "Use decimal units (KB/MB/GB) instead of binary (KiB/MiB/GiB)"
     )]
     base10: bool,
+
+    #[arg(
+        long,
+        value_name = "MS",
+        default_value_t = ui::DEFAULT_UPDATE_MS,
+        help = "Refresh interval in milliseconds for TUI mode (minimum 100)"
+    )]
+    update_ms: u64,
 }
 
 impl Cli {
@@ -113,6 +122,10 @@ impl Cli {
             json: self.json,
             base10: self.base10,
         }
+    }
+
+    fn clamped_update_ms(&self) -> u64 {
+        ui::clamp_update_ms(self.update_ms)
     }
 }
 
@@ -171,8 +184,13 @@ fn main() -> ExitCode {
     let query_mode = cli.is_query_mode_requested() || !io::stdout().is_terminal();
 
     if !query_mode {
-        println!("TUI not yet implemented");
-        return ExitCode::SUCCESS;
+        return match ui::run_tui(cli.clamped_update_ms()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("failed to run TUI: {err}");
+                ExitCode::from(1)
+            }
+        };
     }
 
     match run_query_mode(&cli) {

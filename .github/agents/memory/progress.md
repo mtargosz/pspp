@@ -10,7 +10,7 @@
 - [x] 3. collector — cross-platform snapshot (RSS/VSZ; macOS footprint; Linux PSS/USS/swap)
 - [x] 4. tree-model — forest, rollup + flat aggregation, sorting, unit tests
 - [x] 5. query-mode — pspp <query> stdout mode (filters, --json)
-- [ ] 6. tui-skeleton — ratatui shell: alt screen, mouse, tick loop, resize, quit
+- [x] 6. tui-skeleton — ratatui shell: alt screen, mouse, tick loop, resize, quit
 - [ ] 7. theme-gradients — theme struct, 101-step gradients, 256-color fallback
 - [ ] 8. tree-table-ui — expand/collapse, kb+mouse nav, gradient meters, aggregation toggle
 - [ ] 9. graphs — braille history graph + meter bars (block/tty fallbacks)
@@ -66,3 +66,14 @@
   - Added integration tests `tests/query_cli.rs` that execute the real binary for JSON validity,
     top-row limiting, no-match stderr behavior, and invalid `--mem` diagnostics.
   - Updated architecture memory docs with final milestone 5 CLI/query API details.
+
+  ### 2026-11-11 — coder
+  - Completed milestone 6 TUI skeleton:
+    - Added `src/ui/mod.rs` with `run_tui(update_ms)` event/tick loop using crossterm poll timeout,
+      terminal RAII lifecycle (alternate screen/raw mode/cursor/mouse), and panic-hook restoration.
+    - Added `src/ui/app.rs` app state and refresh logic (`Snapshot` + `ProcTree` rebuild on ticks),
+      quit key handling (`q`, `Ctrl-C`, `Ctrl-Q`), mouse position tracking, and timing helpers.
+    - Added `src/ui/draw.rs` minimal rounded-border frame titled `pspp` with status + hint lines.
+    - Wired `main.rs` to route tty+no-query-args into TUI mode and added `--update-ms` global flag
+      (default 2000, clamped to minimum 100) without changing query-mode behavior.
+    - Added unit tests for update interval clamp and deadline/timeout helper logic.

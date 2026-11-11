@@ -6,8 +6,9 @@
 src/
   main.rs            — clap CLI entry:
                        - if query args present OR stdout is non-tty: run query mode
-                       - else (tty + no query args): print "TUI not yet implemented" (milestone 6)
+                       - else (tty + no query args): run ratatui loop via `ui::run_tui`
                        Query flags: [PATTERN], --pid, --mem, --agg, --min, --sort, --top, --json, --base10
+                       Global UI flag: --update-ms (min-clamped to 100; default 2000)
   collect/
     mod.rs           — Snapshot API: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>
                        MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
@@ -24,7 +25,11 @@ src/
                        name/pid filtering, rollup|flat aggregation, threshold/sort/top,
                        plain aligned table + JSON output wrapper { rows, total }
   ui/
-    app.rs           — event loop (crossterm events + tick), AppState, update_ms, mode toggles
+    mod.rs           — `run_tui`: terminal lifecycle guard (alt screen/raw/mouse/cursor),
+                       panic hook restoration, crossterm event loop + tick scheduling
+    app.rs           — `App` state: snapshot/tree, agg mode, mem kind, update timing,
+                       key/mouse handlers, periodic refresh on ticks
+    draw.rs          — milestone-6 minimal frame draw function with rounded border + status lines
     theme.rs         — named theme colors + 101-step gradients, 256-color fallback
     graph.rs         — braille/block/tty history graph + ■ meter widgets (ratatui custom widgets)
     table.rs         — process tree table: expand/collapse, selection, gradient-colored mem columns
