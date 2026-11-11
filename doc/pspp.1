@@ -9,6 +9,9 @@ pspp \- interactive and scriptable process memory viewer grouped by parent
 .B pspp
 .RI [ OPTIONS ]
 .RI [ PATTERN ]
+.br
+.B pspp \-\-query
+.RI [ OPTIONS ]
 .SH DESCRIPTION
 .B pspp
 ("ps plus plus") sums memory used by running processes grouped by their parent
@@ -17,17 +20,46 @@ process
 exposing the true memory footprint of multi-process applications such as
 browsers, WebView/Electron apps, build tools, and worker supervisors.
 .PP
-When invoked on an interactive terminal with no query arguments,
+When invoked on an interactive terminal with no query-mode arguments,
 .B pspp
 opens a live, mouse-enabled terminal interface inspired by
 .BR btop (1)
 with braille memory history graphs, a grass-green to bloody-red usage gradient,
 and an expandable process tree.
-When any query option or
-.I PATTERN
+When
+.IR PATTERN ,
+.BR \-\-pid ,
+.BR \-\-min ,
+.BR \-\-top ,
+.B \-\-json
+or
+.B \-\-query
 is provided\(emor when standard output is piped or redirected\(em\fBpspp\fR
 runs a single snapshot in non-interactive query mode, prints a plain table or
 JSON document to standard output, and exits.
+Query mode is deterministic: it never reads
+.IR pspp.conf ;
+its defaults are
+.BR "\-\-mem rss" ,
+.BR "\-\-agg rollup" ,
+.BR "\-\-sort agg"
+and binary units.
+The plain header
+.RB ( "RSS \(*S (rollup)" )
+and the JSON output name the mode in effect.
+.PP
+.BR \-\-mem ,
+.BR \-\-agg ,
+.BR \-\-sort ,
+.B \-\-base10
+and
+.B \-\-update\-ms
+apply to whichever mode runs.
+In the TUI they override
+.I pspp.conf
+for that run only and are never saved; with
+.B save_on_exit
+only settings changed inside the TUI are written.
 .SS Aggregation Modes
 .TP
 .B rollup
@@ -119,14 +151,14 @@ Select memory metric:
 .BR uss ,
 .B swap
 (Linux).
-Triggers query mode.
+Applies to both TUI and query mode.
 .TP
 .BI \-\-agg " MODE"
 Select aggregation mode:
 .B rollup
 or
 .BR flat .
-Triggers query mode.
+Applies to both TUI and query mode.
 .TP
 .BI \-\-min " SIZE"
 Filter out rows whose aggregated memory is below
@@ -155,7 +187,7 @@ Sort query rows by
 .B comm
 (case-insensitive ascending).
 Ties break by ascending PID.
-Triggers query mode.
+Applies to both TUI and query mode.
 .TP
 .BI \-\-top " N"
 Show at most
@@ -167,16 +199,26 @@ Triggers query mode.
 .TP
 .B \-\-json
 Format query output as pretty-printed JSON
-.RB ( "{ ""rows"": [...], ""total"": <bytes> }" )
+.RB ( "{ ""mem"": ""rss"", ""agg"": ""rollup"", ""rows"": [...], ""total"": <bytes> }" )
 with raw integer byte values.
 Triggers query mode.
+.TP
+.B \-\-query
+Force one-shot query mode even when standard output is a terminal.
+.TP
+.BI "\-f, \-\-filter " TEXT
+Pre-set the TUI process filter (like
+.BR "btop \-f" ).
+In query mode it is used as
+.I PATTERN
+when none is given.
 .TP
 .B \-\-base10
 Format human-readable sizes using decimal powers of 1000
 .RB ( KB / MB / GB )
 instead of binary powers of 1024
 .RB ( KiB / MiB / GiB ).
-Triggers query mode.
+Applies to both TUI and query mode.
 .TP
 .BI \-\-update\-ms " MS"
 Refresh interval in milliseconds for interactive TUI mode, clamped to
@@ -340,7 +382,7 @@ Query matched zero rows (plain mode also prints
 to standard error;
 .B \-\-json
 prints
-.BR "{""rows"":[],""total"":0}" ).
+.BR "{""mem"":""rss"",""agg"":""rollup"",""rows"":[],""total"":0}" ).
 In TUI mode, terminal initialization/runtime failure returns 1.
 .TP
 .B 2

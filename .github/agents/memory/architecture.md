@@ -5,11 +5,13 @@
 ```
 src/
   main.rs            — clap CLI entry:
-                       - if query args present OR stdout is non-tty: run query mode
+                       - query mode iff PATTERN/--pid/--min/--top/--json/--query given OR stdout non-tty
+                         (query mode never reads config; defaults rss/rollup/agg/binary)
                        - else (tty + no query args): load config, run ratatui loop via `ui::run_tui`,
                          then save runtime settings when `save_on_exit=true`
-                       Query flags: [PATTERN], --pid, --mem, --agg, --min, --sort, --top, --json, --base10
-                       Global UI flag: --update-ms (min-clamped to 100)
+                       Query-only flags: [PATTERN], --pid, --min, --top, --json, --query
+                       Both modes: --mem, --agg, --sort, --base10, --update-ms (clamped), -f/--filter
+                       Config saved on exit = only fields changed in the TUI (diff vs. initial settings)
   collect/
     mod.rs           — Snapshot API: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>
                        MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
@@ -24,7 +26,7 @@ src/
   query/
     mod.rs           — pure query logic (`QueryOpts`, `run_query`, size parse/format):
                        name/pid filtering, rollup|flat aggregation, threshold/sort/top,
-                       plain aligned table + JSON output wrapper { rows, total }
+                       plain aligned table + JSON output wrapper { mem, agg, rows, total }
   ui/
     mod.rs           — `run_tui`: terminal lifecycle guard (alt screen/raw/mouse/cursor),
                        panic hook restoration, crossterm event loop + tick scheduling; returns
@@ -92,7 +94,7 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
     ancestor; flat rows (direct children) are disjoint so all are summed. Saturating.
   - `main` exit status: 0 rows printed, 1 no matches (plain also prints `no matches` to stderr),
     2 usage/runtime error; EPIPE on stdout is success. `--top` must be ≥ 1.
-  - JSON object: `{ rows: [{ pid, ppid, comm, own, agg, children, descendants, approximate }], total }`
+  - JSON object: `{ mem, agg, rows: [{ pid, ppid, comm, own, agg, children, descendants, approximate }], total }`
 - `query::{parse_size, format_size}`
   - parse `512K`, `100M`, `1.5G`, bytes; format binary (`KiB`) or decimal (`KB`) units
 

@@ -49,3 +49,17 @@ Per-agent models set in profile frontmatter:
   filter-clear `c`.
 - **Config is saved atomically** (write `pspp.conf.tmp`, rename).
 
+
+## 2026-11-11 — M16 (review follow-up; reverses earlier "query inherits config defaults")
+
+- **Query mode never reads `pspp.conf`.** Defaults: `--mem rss`, `--agg rollup`, `--sort agg`, binary
+  units. Reason: a TUI session that toggled `e` persisted `agg_mode = "flat"` and silently changed every
+  later `pspp --json`. Reverses the milestone-5 behaviour of inheriting config defaults.
+- **Plain header and JSON name the mode**: `RSS Σ (rollup)`; JSON is `{ "mem", "agg", "rows", "total" }`.
+- **Mode selection**: query mode iff `PATTERN`, `--pid`, `--min`, `--top`, `--json` or `--query` is given,
+  or stdout is not a tty. `--mem/--agg/--sort/--base10/--update-ms` apply to whichever mode runs (they no
+  longer force query mode). New `--query` and `-f/--filter` (TUI filter preset; `PATTERN` fallback in query mode).
+- **`save_on_exit` persists only what the user changed in the TUI**: `main` diffs the settings the TUI
+  started with (config + CLI overrides) against the final settings and writes only differing fields, so CLI
+  overrides are never saved. Caveat: changing a value and changing it back to the CLI-overridden value is
+  indistinguishable from no change. This also reverses the reviewer's "`--update-ms` is persisted" note.

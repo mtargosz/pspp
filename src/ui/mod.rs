@@ -65,8 +65,14 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub fn run_tui(settings: UiSettings) -> Result<UiSettings, Box<dyn Error>> {
+pub fn run_tui(
+    settings: UiSettings,
+    initial_filter: Option<String>,
+) -> Result<UiSettings, Box<dyn Error>> {
     let mut app = app::App::from_settings(settings);
+    if let Some(filter) = initial_filter {
+        app.set_filter(&filter);
+    }
     let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 

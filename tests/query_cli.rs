@@ -110,3 +110,54 @@ fn top_zero_is_rejected_and_unmatched_json_exits_one() {
         serde_json::from_slice(&output.stdout).expect("json should still be emitted");
     assert_eq!(parsed["rows"].as_array().map(Vec::len), Some(0));
 }
+
+#[test]
+fn json_names_mem_and_agg_with_rollup_default() {
+    let output = run(&["--json", "--top", "3"]);
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+    assert_eq!(parsed["mem"], "rss");
+    assert_eq!(parsed["agg"], "rollup");
+
+    let output = run(&["--json", "--top", "3", "--agg", "flat", "--mem", "vsz"]);
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+    assert_eq!(parsed["mem"], "vsz");
+    assert_eq!(parsed["agg"], "flat");
+}
+
+#[test]
+fn plain_header_names_the_aggregation_mode() {
+    let stdout = String::from_utf8_lossy(&run(&["--top", "2"]).stdout).into_owned();
+    assert!(stdout
+        .lines()
+        .next()
+        .is_some_and(|h| h.contains("RSS Σ (rollup)")));
+
+    let stdout =
+        String::from_utf8_lossy(&run(&["--top", "2", "--agg", "flat"]).stdout).into_owned();
+    assert!(stdout
+        .lines()
+        .next()
+        .is_some_and(|h| h.contains("RSS Σ (flat)")));
+}
+
+#[test]
+fn query_mode_ignores_a_saved_config() {
+    let dir = std::env::temp_dir().join(format!("pspp-query-cfg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    std::fs::write(
+        dir.join("pspp.conf"),
+        "agg_mode = \"flat\"\nmem_kind = \"vsz\"\nsort_key = \"pid\"\nbase10 = true\n",
+    )
+    .expect("write config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_pspp"))
+        .env("PSPP_CONFIG_DIR", &dir)
+        .args(["--json", "--top", "3"])
+        .output()
+        .expect("pspp binary should run");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let parsed: Value = serde_json::from_slice(&output.stdout).expect("valid json");
+    assert_eq!(parsed["agg"], "rollup");
+    assert_eq!(parsed["mem"], "rss");
+}

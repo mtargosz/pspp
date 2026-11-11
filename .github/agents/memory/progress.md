@@ -22,7 +22,7 @@
 - [x] 13. review-pass — reviewer agent full pass
 - [x] 14. docs — README, --help, man page
 - [x] M15 fix(collect): correct ppid on macOS without root
-- [ ] M16 feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10
+- [x] M16 feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10
 - [ ] M17 feat(ui): honest memory graph, used/total status, % column
 - [ ] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
 - [ ] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
@@ -273,6 +273,13 @@
 - Live check unprivileged: 723 procs, 1 with ppid 0 (launchd) — was ~215.
 - Tests: own ppid == `getppid()`, launchd present, ≤4 parentless, partial-trailing-entry parse.
 
+### 2026-11-11 — M16 (feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10)
+- Query mode ignores `pspp.conf`; header `RSS Σ (rollup)`; JSON gains `mem` and `agg`.
+- Mode selection per the new rule; added `--query`, `-f/--filter` (`App::set_filter`, `run_tui(settings, filter)`).
+- Config persistence diffs initial vs final settings (`apply_changed_settings_to_config`).
+- Tests: `is_query_mode_requested` unit tests (incl. `--mem footprint` is not query mode), config-diff test,
+  3 integration tests (JSON `mem`/`agg`, header, `PSPP_CONFIG_DIR` isolation). README, man page, `--help` updated.
+
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
 
@@ -282,7 +289,6 @@
 - Filter mode ignores the expanded set, so Space/Enter toggles state with no visible effect until the
   filter is cleared.
 - Esc in filter input clears the filter (btop restores the previous one). Documented as intended.
-- `--update-ms` from the CLI is persisted by `save_on_exit` (btop does not persist CLI overrides).
 - Config save rewrites the file: user comments and unknown keys are dropped.
 - Menu is a simplified btop menu (no ASCII-art banner, no 80x24 minimum-size message).
 - No mouse handling in the Options/Help overlays.

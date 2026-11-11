@@ -27,12 +27,16 @@ cargo install --path .
 
 ## Interactive TUI
 
-Run `pspp` with no query flags in an interactive terminal to launch the live TUI:
+Run `pspp` on an interactive terminal with no query flags (`PATTERN`, `--pid`, `--min`, `--top`, `--json`, `--query`) to launch the live TUI:
 
 ```sh
 pspp
-pspp --update-ms 1000   # launch TUI with a 1-second refresh interval
+pspp --update-ms 1000          # 1-second refresh interval
+pspp --mem footprint --agg flat # start with footprint memory, flat aggregation
+pspp -f chrome                  # pre-set the process filter (like btop -f)
 ```
+
+`--mem`, `--agg`, `--sort`, `--base10` and `--update-ms` apply to the TUI too, for that run only: CLI overrides are never written to `pspp.conf`. With `save_on_exit = true`, only settings you change inside the TUI are saved.
 
 <!-- TODO: add screenshot of pspp TUI (expandable process tree, braille memory graph, grass-green to bloody-red gradient meters, and Esc overlay menu) -->
 
@@ -131,7 +135,7 @@ sort_reverse = true       # true = descending, false = ascending
 
 ## Query Mode (Non-Interactive CLI)
 
-`pspp` runs in one-shot **query mode** whenever any query argument/flag is supplied (`PATTERN`, `--pid`, `--mem`, `--agg`, `--min`, `--sort`, `--top`, `--json`, `--base10`) **or** whenever `stdout` is piped/redirected to a non-TTY. Unspecified `--mem`, `--agg`, `--sort`, and `--base10` options inherit their defaults from `pspp.conf`.
+`pspp` runs in one-shot **query mode** when `PATTERN`, `--pid`, `--min`, `--top`, `--json` or `--query` is supplied (`--query` forces one-shot output on a terminal) **or** whenever `stdout` is piped/redirected to a non-TTY. Query mode is deterministic: it **never reads `pspp.conf`**. Defaults are `--mem rss --agg rollup --sort agg` with binary units; the plain header and the JSON output both name the mode in effect (`RSS Σ (rollup)`, `"agg": "rollup"`).
 
 ### CLI Options
 
@@ -144,7 +148,9 @@ sort_reverse = true       # true = descending, false = ascending
 | `--min <SIZE>` | Keep only rows whose aggregated memory is `>= SIZE` (e.g. `512K`, `100M`, `1.5G`, or bytes). |
 | `--sort <FIELD>` | Sort rows by `agg` (desc), `own` (desc), `pid` (asc), or `comm` (asc). |
 | `--top <N>` | Emit at most the first `N` rows after sorting (`N >= 1`). |
-| `--json` | Emit pretty JSON (`{ "rows": [...], "total": <bytes> }`) with raw byte counts. |
+| `--json` | Emit pretty JSON (`{ "mem": "rss", "agg": "rollup", "rows": [...], "total": <bytes> }`) with raw byte counts. |
+| `--query` | Force one-shot query mode even when `stdout` is a terminal. |
+| `-f, --filter <TEXT>` | Pre-set the TUI process filter (like `btop -f`); used as `PATTERN` in query mode when none is given. |
 | `--base10` | Format human sizes in decimal (`KB`/`MB`/`GB`) instead of binary (`KiB`/`MiB`/`GiB`). |
 | `--update-ms <MS>` | TUI refresh interval in milliseconds (`100` to `86400000`). |
 
@@ -156,39 +162,39 @@ sort_reverse = true       # true = descending, false = ascending
 
 ```console
 $ pspp --top 5
-PID    PARENT          COMM                           OWN      RSS Σ  CHILDREN
-------------------------------------------------------------------------------
-1      -               launchd                        0 B   11.1 GiB       271
-8017   1(launchd)      Microsoft Edge           263.9 MiB    3.9 GiB        97
-38372  1(launchd)      Google Chrome            133.0 MiB    1.1 GiB        29
-88701  1(launchd)      MSTeams                   53.4 MiB    1.0 GiB         2
-88752  88701(MSTeams)  Microsoft Teams WebView  143.6 MiB  980.7 MiB         8
-                       TOTAL                                11.1 GiB
+PID    PARENT          COMM                           OWN      RSS Σ (rollup)  CHILDREN
+---------------------------------------------------------------------------------------
+1      -               launchd                        0 B            11.1 GiB       271
+8017   1(launchd)      Microsoft Edge           263.9 MiB             3.9 GiB        97
+38372  1(launchd)      Google Chrome            133.0 MiB             1.1 GiB        29
+88701  1(launchd)      MSTeams                   53.4 MiB             1.0 GiB         2
+88752  88701(MSTeams)  Microsoft Teams WebView  143.6 MiB           980.7 MiB         8
+                       TOTAL                                         11.1 GiB
 ```
 
 #### 2. Filter by process name (`PATTERN`)
 
 ```console
 $ pspp zsh
-PID    PARENT             COMM         OWN      RSS Σ  CHILDREN
----------------------------------------------------------------
-97242  97241(login)       zsh    656.0 KiB   13.1 MiB         1
-48332  50784(herdr-core)  zsh    704.0 KiB  704.0 KiB         0
-9602   9601(login)        zsh    672.0 KiB  672.0 KiB         0
-                          TOTAL              14.5 MiB
+PID    PARENT             COMM         OWN      RSS Σ (rollup)  CHILDREN
+------------------------------------------------------------------------
+97242  97241(login)       zsh    656.0 KiB            13.1 MiB         1
+48332  50784(herdr-core)  zsh    704.0 KiB           704.0 KiB         0
+9602   9601(login)        zsh    672.0 KiB           672.0 KiB         0
+                          TOTAL                       14.5 MiB
 ```
 
 #### 3. Combine `--mem` and `--agg` (direct-children `flat` sum)
 
 ```console
 $ pspp --mem footprint --agg flat --top 4
-PID    PARENT          COMM                           OWN   Footprint Σ  CHILDREN
----------------------------------------------------------------------------------
-8017   1(launchd)      Microsoft Edge           822.1 MiB      24.4 GiB        97
-1      -               launchd                       0 B~       8.7 GiB       270
-38372  1(launchd)      Google Chrome            364.6 MiB       2.1 GiB        29
-88752  88701(MSTeams)  Microsoft Teams WebView  146.7 MiB       2.0 GiB         8
-                       TOTAL                                   37.2 GiB
+PID    PARENT          COMM                           OWN   Footprint Σ (flat)  CHILDREN
+----------------------------------------------------------------------------------------
+8017   1(launchd)      Microsoft Edge           822.1 MiB             24.4 GiB        97
+1      -               launchd                       0 B~              8.7 GiB       270
+38372  1(launchd)      Google Chrome            364.6 MiB              2.1 GiB        29
+88752  88701(MSTeams)  Microsoft Teams WebView  146.7 MiB              2.0 GiB         8
+                       TOTAL                                          37.2 GiB
 ```
 
 *(On Linux, try `pspp --mem pss --agg rollup --top 5` for proportional shared-memory rollups.)*
@@ -197,12 +203,12 @@ PID    PARENT          COMM                           OWN   Footprint Σ  CHILDR
 
 ```console
 $ pspp --min 500M --sort own --top 3
-PID    PARENT      COMM                  OWN     RSS Σ  CHILDREN
-----------------------------------------------------------------
-8017   1(launchd)  Microsoft Edge  263.9 MiB   3.9 GiB        97
-38372  1(launchd)  Google Chrome   133.0 MiB   1.1 GiB        29
-1      -           launchd               0 B  11.1 GiB       271
-                   TOTAL                      11.1 GiB
+PID    PARENT      COMM                  OWN     RSS Σ (rollup)  CHILDREN
+-------------------------------------------------------------------------
+8017   1(launchd)  Microsoft Edge  263.9 MiB            3.9 GiB        97
+38372  1(launchd)  Google Chrome   133.0 MiB            1.1 GiB        29
+1      -           launchd               0 B           11.1 GiB       271
+                   TOTAL                               11.1 GiB
 ```
 
 #### 5. JSON output (`--json`) piped to `jq`
@@ -221,14 +227,14 @@ $ pspp --json --min 1G | jq '.rows[] | {pid, comm, agg_gib: (.agg / 1073741824 *
 }
 ```
 
-Each JSON object in `rows` contains `{ pid, ppid, comm, own, agg, children, descendants, approximate }` with raw byte integers alongside top-level `total`.
+Each JSON object in `rows` contains `{ pid, ppid, comm, own, agg, children, descendants, approximate }` with raw byte integers alongside top-level `mem`, `agg` (the aggregation mode: `rollup` or `flat`) and `total`.
 
 #### 6. Grep-style exit codes in shell scripts
 
 Query mode uses `grep`/`pgrep`-compatible exit statuses:
 
 - `0` — at least one matching row was printed (piping into `head` / `EPIPE` also exits `0`).
-- `1` — no processes matched (plain mode writes `no matches` to `stderr`; `--json` still prints `{"rows":[],"total":0}`).
+- `1` — no processes matched (plain mode writes `no matches` to `stderr`; `--json` still prints `{"mem":"rss","agg":"rollup","rows":[],"total":0}`).
 - `2` — CLI usage error (e.g. `--top 0`, invalid `--min` suffix, unavailable `--mem` kind) or runtime I/O error.
 
 ```sh

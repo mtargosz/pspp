@@ -1041,6 +1041,13 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// Pre-sets the committed process filter (CLI `-f/--filter`).
+    pub fn set_filter(&mut self, text: &str) {
+        self.filter_input = text.to_owned();
+        self.filter_committed = text.to_owned();
+        self.rebuild_rows();
+    }
+
     fn clear_filter(&mut self) {
         self.filter_input.clear();
         self.filter_committed.clear();

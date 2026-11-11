@@ -53,6 +53,8 @@ struct RenderRow {
 
 #[derive(Debug, Serialize)]
 struct JsonOutput {
+    mem: String,
+    agg: &'static str,
     rows: Vec<JsonRow>,
     total: u64,
 }
@@ -85,7 +87,7 @@ pub fn run_query(snapshot: &Snapshot, opts: &QueryOpts) -> QueryResult {
     let (rows, total) = matching_rows(snapshot, opts);
     let row_count = rows.len();
     let output = if opts.json {
-        render_json(rows, total)
+        render_json(rows, total, opts)
     } else {
         render_plain(&rows, total, opts)
     };
@@ -234,7 +236,7 @@ fn compare_rows(left: &RenderRow, right: &RenderRow, sort_by: SortBy) -> Orderin
 }
 
 fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts) -> String {
-    let agg_header = format!("{} Σ", opts.mem_kind.label());
+    let agg_header = format!("{} Σ ({})", opts.mem_kind.label(), agg_name(opts.agg_mode));
     let header = [
         "PID",
         "PARENT",
@@ -360,8 +362,17 @@ fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts) -> String {
     lines.join("\n")
 }
 
-fn render_json(rows: Vec<RenderRow>, total: Total) -> String {
+fn agg_name(mode: AggMode) -> &'static str {
+    match mode {
+        AggMode::Rollup => "rollup",
+        AggMode::Flat => "flat",
+    }
+}
+
+fn render_json(rows: Vec<RenderRow>, total: Total, opts: &QueryOpts) -> String {
     let payload = JsonOutput {
+        mem: opts.mem_kind.label().to_lowercase(),
+        agg: agg_name(opts.agg_mode),
         rows: rows
             .into_iter()
             .map(|row| JsonRow {
@@ -380,7 +391,11 @@ fn render_json(rows: Vec<RenderRow>, total: Total) -> String {
 
     match serde_json::to_string_pretty(&payload) {
         Ok(rendered) => rendered,
-        Err(_) => r#"{"rows":[],"total":0}"#.to_owned(),
+        Err(_) => format!(
+            r#"{{"mem":"{}","agg":"{}","rows":[],"total":0}}"#,
+            opts.mem_kind.label().to_lowercase(),
+            agg_name(opts.agg_mode)
+        ),
     }
 }
 
