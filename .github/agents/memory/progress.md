@@ -11,7 +11,7 @@
 - [x] 4. tree-model — forest, rollup + flat aggregation, sorting, unit tests
 - [x] 5. query-mode — pspp <query> stdout mode (filters, --json)
 - [x] 6. tui-skeleton — ratatui shell: alt screen, mouse, tick loop, resize, quit
-- [ ] 7. theme-gradients — theme struct, 101-step gradients, 256-color fallback
+- [x] 7. theme-gradients — theme struct, 101-step gradients, 256-color fallback
 - [ ] 8. tree-table-ui — expand/collapse, kb+mouse nav, gradient meters, aggregation toggle
 - [ ] 9. graphs — braille history graph + meter bars (block/tty fallbacks)
 - [ ] 10. menus — Esc overlay, Options (General-style), config persistence
@@ -77,3 +77,15 @@
     - Wired `main.rs` to route tty+no-query-args into TUI mode and added `--update-ms` global flag
       (default 2000, clamped to minimum 100) without changing query-mode behavior.
     - Added unit tests for update interval clamp and deadline/timeout helper logic.
+
+### 2026-11-11 — ui-stylist
+- Completed milestone 7 theme + gradients:
+  - Added `src/ui/theme.rs`: `Rgb`, `Theme` (btop Default colors, `main_bg: None`), 101-step
+    usage/graph gradients (two 50-step passes #77ca9b → #cbc06c → #dc4c4c), `usage_color`,
+    `color()` applying truecolor-vs-256-color policy decided once from `COLORTERM`.
+  - `App` now owns a `Theme`; `draw.rs` colors border/title/status/hint from the theme and the
+    "total" figure via `usage_color(sum(selected mem kind) / system memory)`.
+  - 7 theme unit tests + 1 draw helper test; build, clippy `-D warnings`, fmt, tests green.
+  - Deviation: grey (r==g==b) colors use btop's 232+ ramp (<8→16, >248→231) instead of the cube;
+    non-grey use the cube formula. `theme.rs` has module-level `allow(dead_code)` until later
+    milestones consume the full API.

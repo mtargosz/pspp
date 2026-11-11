@@ -80,3 +80,14 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - JSON object: `{ rows: [{ pid, ppid, comm, own, agg, children, descendants, approximate }], total }`
 - `query::{parse_size, format_size}`
   - parse `512K`, `100M`, `1.5G`, bytes; format binary (`KiB`) or decimal (`KB`) units
+
+## `ui::theme` public API (milestone 7)
+
+- `Rgb(u8,u8,u8)`: `from_hex("#rrggbb"|"#xx")`, `grey(v)`.
+- `build_gradient(start, mid, end) -> [Rgb; 101]` — two 50-step linear passes, index = percent.
+- `truecolor_from_env(Option<&str>)` — `COLORTERM` = `truecolor`|`24bit`.
+- `Theme::{detect(), new(truecolor: bool)}` (the latter for tests/overrides); `App.theme` holds it.
+  - Fields: `main_bg: Option<Rgb>` (None = transparent), `main_fg`, `title`, `hi_fg`, `selected_bg`,
+    `selected_fg`, `inactive_fg`, `meter_bg`, `graph_text`, `div_line`, `gradient_{start,mid,end}`.
+  - `color(Rgb) -> Color` (truecolor `Color::Rgb`, else `Color::Indexed` via grey ramp / 6×6×6 cube).
+  - `usage_rgb/usage_color(pct)` and `graph_rgb/graph_color(pct)` (pct clamped to 100).

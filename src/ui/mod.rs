@@ -1,5 +1,6 @@
 pub mod app;
 pub mod draw;
+pub mod theme;
 
 use std::error::Error;
 use std::io;

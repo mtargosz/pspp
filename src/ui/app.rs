@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent
 
 use crate::collect::{self, Snapshot};
 use crate::model::{AggMode, MemKind, ProcTree};
+use crate::ui::theme::Theme;
 
 pub const DEFAULT_UPDATE_MS: u64 = 2_000;
 pub const MIN_UPDATE_MS: u64 = 100;
@@ -26,6 +27,7 @@ pub struct App {
     pub agg_mode: AggMode,
     pub mem_kind: MemKind,
     pub update_ms: u64,
+    pub theme: Theme,
     pub should_quit: bool,
     pub last_tick_at: Instant,
     pub next_tick_at: Instant,
@@ -45,6 +47,7 @@ impl App {
             agg_mode: AggMode::Rollup,
             mem_kind: MemKind::Rss,
             update_ms,
+            theme: Theme::detect(),
             should_quit: false,
             last_tick_at: now,
             next_tick_at: next_tick_deadline(now, update_ms),
