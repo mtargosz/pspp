@@ -1,4 +1,5 @@
 mod collect;
+mod config;
 pub mod model;
 mod query;
 mod ui;
@@ -91,10 +92,9 @@ struct Cli {
     #[arg(
         long,
         value_name = "MS",
-        default_value_t = ui::DEFAULT_UPDATE_MS,
         help = "Refresh interval in milliseconds for TUI mode (minimum 100)"
     )]
-    update_ms: u64,
+    update_ms: Option<u64>,
 }
 
 impl Cli {
@@ -110,22 +110,26 @@ impl Cli {
             || self.base10
     }
 
-    fn to_query_opts(&self) -> QueryOpts {
+    fn to_query_opts(&self, defaults: &config::Config) -> QueryOpts {
         QueryOpts {
             pattern: self.pattern.clone(),
             pid: self.pid,
-            mem_kind: self.mem.unwrap_or(MemKind::Rss),
-            agg_mode: self.agg.unwrap_or(CliAgg::Rollup).into(),
+            mem_kind: self
+                .mem
+                .unwrap_or_else(|| ui::parse_mem_kind_config(&defaults.mem_kind)),
+            agg_mode: self
+                .agg
+                .map(Into::into)
+                .unwrap_or_else(|| ui::parse_agg_mode_config(&defaults.agg_mode)),
             min_bytes: self.min,
-            sort_by: self.sort.unwrap_or(CliSort::Agg).into(),
+            sort_by: self
+                .sort
+                .map(Into::into)
+                .unwrap_or_else(|| ui::parse_sort_config(&defaults.sort_key)),
             top: self.top,
             json: self.json,
-            base10: self.base10,
+            base10: if self.base10 { true } else { defaults.base10 },
         }
-    }
-
-    fn clamped_update_ms(&self) -> u64 {
-        ui::clamp_update_ms(self.update_ms)
     }
 }
 
@@ -169,9 +173,9 @@ fn write_stdout_line(text: &str) -> io::Result<()> {
     stdout.write_all(b"\n")
 }
 
-fn run_query_mode(cli: &Cli) -> Result<bool, String> {
+fn run_query_mode(cli: &Cli, defaults: &config::Config) -> Result<bool, String> {
     let snapshot = collect::take_snapshot();
-    let opts = cli.to_query_opts();
+    let opts = cli.to_query_opts(defaults);
 
     let output = query::run_query(&snapshot, &opts);
     write_stdout_line(&output).map_err(|err| format!("failed to write stdout: {err}"))?;
@@ -179,13 +183,69 @@ fn run_query_mode(cli: &Cli) -> Result<bool, String> {
     Ok(!opts.json && query::count_matches(&snapshot, &opts) == 0)
 }
 
+fn cli_and_config_to_ui_settings(cli: &Cli, cfg: &config::Config) -> ui::UiSettings {
+    ui::UiSettings {
+        update_ms: cli.update_ms.unwrap_or(cfg.update_ms),
+        mem_kind: cli
+            .mem
+            .unwrap_or_else(|| ui::parse_mem_kind_config(&cfg.mem_kind)),
+        agg_mode: cli
+            .agg
+            .map(Into::into)
+            .unwrap_or_else(|| ui::parse_agg_mode_config(&cfg.agg_mode)),
+        graph_symbol: ui::GraphSymbolSetting::from_config(&cfg.graph_symbol),
+        base10: if cli.base10 { true } else { cfg.base10 },
+        save_on_exit: cfg.save_on_exit,
+        sort_by: cli
+            .sort
+            .map(Into::into)
+            .unwrap_or_else(|| ui::parse_sort_config(&cfg.sort_key)),
+        sort_reverse: cfg.sort_reverse,
+    }
+}
+
+fn apply_ui_settings_to_config(cfg: &mut config::Config, settings: &ui::UiSettings) {
+    cfg.update_ms = settings.update_ms;
+    cfg.mem_kind = mem_kind_to_config(settings.mem_kind).to_owned();
+    cfg.agg_mode = match settings.agg_mode {
+        AggMode::Rollup => "rollup".to_owned(),
+        AggMode::Flat => "flat".to_owned(),
+    };
+    cfg.graph_symbol = settings.graph_symbol.as_config().to_owned();
+    cfg.base10 = settings.base10;
+    cfg.save_on_exit = settings.save_on_exit;
+    cfg.sort_key = ui::sort_to_config(settings.sort_by).to_owned();
+    cfg.sort_reverse = settings.sort_reverse;
+}
+
+fn mem_kind_to_config(mem_kind: MemKind) -> &'static str {
+    match mem_kind {
+        MemKind::Rss => "rss",
+        MemKind::Vsz => "vsz",
+        MemKind::Footprint => "footprint",
+        MemKind::Pss => "pss",
+        MemKind::Uss => "uss",
+        MemKind::Swap => "swap",
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    let mut cfg = config::Config::load();
     let query_mode = cli.is_query_mode_requested() || !io::stdout().is_terminal();
 
     if !query_mode {
-        return match ui::run_tui(cli.clamped_update_ms()) {
-            Ok(()) => ExitCode::SUCCESS,
+        let settings = cli_and_config_to_ui_settings(&cli, &cfg);
+        return match ui::run_tui(settings) {
+            Ok(updated_settings) => {
+                if updated_settings.save_on_exit {
+                    apply_ui_settings_to_config(&mut cfg, &updated_settings);
+                    if let Err(err) = cfg.save() {
+                        eprintln!("failed to save config: {err}");
+                    }
+                }
+                ExitCode::SUCCESS
+            }
             Err(err) => {
                 eprintln!("failed to run TUI: {err}");
                 ExitCode::from(1)
@@ -193,7 +253,7 @@ fn main() -> ExitCode {
         };
     }
 
-    match run_query_mode(&cli) {
+    match run_query_mode(&cli, &cfg) {
         Ok(no_matches) => {
             if no_matches {
                 eprintln!("no matches");

@@ -19,7 +19,10 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-pub use app::{clamp_update_ms, App, DEFAULT_UPDATE_MS};
+pub use app::{
+    parse_agg_mode_config, parse_mem_kind_config, parse_sort_config, sort_to_config,
+    GraphSymbolSetting, UiSettings,
+};
 
 type PanicHook = dyn for<'a> Fn(&PanicHookInfo<'a>) + Send + Sync + 'static;
 
@@ -59,8 +62,8 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub fn run_tui(update_ms: u64) -> Result<(), Box<dyn Error>> {
-    let mut app = App::new(update_ms);
+pub fn run_tui(settings: UiSettings) -> Result<UiSettings, Box<dyn Error>> {
+    let mut app = app::App::from_settings(settings);
     let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
@@ -84,7 +87,7 @@ pub fn run_tui(update_ms: u64) -> Result<(), Box<dyn Error>> {
 
     drop(terminal);
     terminal_guard.restore()?;
-    Ok(())
+    Ok(app.ui_settings())
 }
 
 fn setup_terminal_state() -> io::Result<()> {

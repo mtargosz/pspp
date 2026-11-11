@@ -3,17 +3,22 @@ use std::ops::Range;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::query::format_size;
-use crate::ui::app::{App, DisplayRow};
+use crate::ui::app::{App, AppMode, DisplayRow};
 use crate::ui::graph;
 
 const MEM_BOX_HEIGHT: u16 = 6;
 const MEM_BOX_MIN_INNER_HEIGHT: u16 = 12;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    draw_main(frame, app);
+    draw_overlay(frame, app);
+}
+
+fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
     let theme = app.theme.clone();
     let area = frame.area();
     let fg = |rgb| Style::default().fg(theme.color(rgb));
@@ -85,7 +90,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
             Style::default().fg(theme.color(theme.main_fg)),
         ),
         Span::styled(
-            format!("  total {}", format_size(app.snapshot.total_mem, false)),
+            format!(
+                "  total {}",
+                format_size(app.snapshot.total_mem, app.base10)
+            ),
             Style::default().fg(theme.usage_color(total_pct)),
         ),
     ]);
@@ -131,6 +139,21 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     render_hint(frame, hint_area, app);
 }
 
+fn draw_overlay(frame: &mut Frame<'_>, app: &mut App) {
+    match app.mode {
+        AppMode::Normal => app.clear_menu_hit_test(),
+        AppMode::Menu => render_menu_overlay(frame, app),
+        AppMode::Options => {
+            app.clear_menu_hit_test();
+            render_options_overlay(frame, app);
+        }
+        AppMode::Help => {
+            app.clear_menu_hit_test();
+            render_help_overlay(frame, app);
+        }
+    }
+}
+
 fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
     let block = Block::bordered()
@@ -161,7 +184,7 @@ fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
             width,
             usize::from(graph_height),
             max,
-            app.graph_symbols,
+            app.resolved_graph_symbols(),
             theme,
         );
         frame.render_widget(Paragraph::new(lines), graph_area);
@@ -169,8 +192,8 @@ fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
     let pct = percentage(used, max);
     let label = format!("{} total ", app.mem_kind.label().to_ascii_uppercase());
-    let used_text = format_size(used, false);
-    let max_text = format!(" / {} ", format_size(max, false));
+    let used_text = format_size(used, app.base10);
+    let max_text = format!(" / {} ", format_size(max, app.base10));
     let pct_text = format!(" {pct}%");
     let fixed = label.chars().count()
         + used_text.chars().count()
@@ -312,9 +335,9 @@ fn render_row_cells(
 
     let comm_text = format!("{}{}", row.tree_prefix, row.comm);
     let pid_text = row.pid.to_string();
-    let own_text = with_approx_suffix(format_size(row.own, false), row.own_approximate);
+    let own_text = with_approx_suffix(format_size(row.own, app.base10), row.own_approximate);
     let agg_text = with_approx_suffix(
-        format_size(row.aggregated, false),
+        format_size(row.aggregated, app.base10),
         row.aggregated_approximate,
     );
     let children_text = row.child_count.to_string();
@@ -438,9 +461,207 @@ fn render_hint(frame: &mut Frame<'_>, hint_area: Rect, app: &App) {
             "  e agg  m mem  s sort  S/r rev",
             Style::default().fg(theme.color(theme.main_fg)),
         ),
+        Span::styled(
+            "  Esc menu",
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
         Span::styled("  q quit", Style::default().fg(theme.color(theme.hi_fg))),
     ]);
     frame.render_widget(Paragraph::new(hint), hint_area);
+}
+
+fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).clamp(24, 44);
+    let height = area.height.saturating_sub(4).clamp(13, 17);
+    let overlay = centered_rect(area, width, height);
+
+    let theme = &app.theme;
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.color(theme.div_line)))
+        .title(Span::styled(
+            " menu ",
+            Style::default().fg(theme.color(theme.title)),
+        ));
+    frame.render_widget(block, overlay);
+
+    let inner = Block::default().inner(overlay);
+    let button_height = if inner.height >= 11 { 3 } else { 1 };
+    let spacing = if button_height == 3 { 1 } else { 0 };
+
+    let mut button_rects = [
+        Rect::new(inner.x, inner.y, inner.width, button_height),
+        Rect::new(inner.x, inner.y, inner.width, button_height),
+        Rect::new(inner.x, inner.y, inner.width, button_height),
+    ];
+
+    let total_buttons_height = button_height * 3 + spacing * 2;
+    let mut y = inner
+        .y
+        .saturating_add(inner.height.saturating_sub(total_buttons_height) / 2);
+
+    for (idx, button) in App::menu_buttons().iter().enumerate() {
+        let rect = Rect {
+            x: inner.x.saturating_add(1),
+            y,
+            width: inner.width.saturating_sub(2),
+            height: button_height,
+        };
+        button_rects[idx] = rect;
+
+        let selected = *button == app.menu_selected();
+        let border_color = if selected { theme.hi_fg } else { theme.main_fg };
+        let border_type = if selected {
+            BorderType::Double
+        } else {
+            BorderType::Plain
+        };
+
+        let button_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(border_type)
+            .border_style(Style::default().fg(theme.color(border_color)));
+        frame.render_widget(button_block, rect);
+
+        let label = Paragraph::new(button.label())
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(theme.color(border_color)));
+        frame.render_widget(label, rect);
+
+        y = y.saturating_add(button_height + spacing);
+    }
+
+    app.set_menu_hit_test(overlay, button_rects);
+}
+
+fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
+    let area = frame.area();
+    let width = area.width.saturating_sub(4).clamp(40, 78);
+    let height = area.height.saturating_sub(4).clamp(12, 18);
+    let overlay = centered_rect(area, width, height);
+
+    let theme = &app.theme;
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.color(theme.div_line)))
+        .title(Span::styled(
+            " options ",
+            Style::default().fg(theme.color(theme.title)),
+        ));
+    let inner = block.inner(overlay);
+    frame.render_widget(block, overlay);
+
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let sections = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
+    let list_area = sections[0];
+    let bottom = sections[1];
+
+    let label_width = 20;
+    for (idx, key) in App::option_keys().iter().enumerate() {
+        if idx >= usize::from(list_area.height) {
+            break;
+        }
+
+        let row_rect = Rect {
+            x: list_area.x,
+            y: list_area.y + u16::try_from(idx).unwrap_or(u16::MAX),
+            width: list_area.width,
+            height: 1,
+        };
+
+        let selected = idx == app.option_selected_index();
+        let line = format!(
+            "{:<label_width$} {}",
+            key.label(),
+            app.option_value(*key),
+            label_width = label_width
+        );
+
+        let style = if selected {
+            Style::default()
+                .fg(theme.color(theme.selected_fg))
+                .bg(theme.color(theme.selected_bg))
+        } else {
+            Style::default().fg(theme.color(theme.main_fg))
+        };
+
+        frame.render_widget(Paragraph::new(line).style(style), row_rect);
+    }
+
+    let desc_area = Rect {
+        x: bottom.x,
+        y: bottom.y,
+        width: bottom.width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(app.selected_option_description()).style(
+            Style::default()
+                .fg(theme.color(theme.main_fg))
+                .bg(theme.color(theme.selected_bg)),
+        ),
+        desc_area,
+    );
+
+    let hint_area = Rect {
+        x: bottom.x,
+        y: bottom.y.saturating_add(1),
+        width: bottom.width,
+        height: bottom.height.saturating_sub(1),
+    };
+    frame.render_widget(
+        Paragraph::new("↑/↓ select  ←/→ change  Enter edit  Esc/q back")
+            .style(Style::default().fg(theme.color(theme.inactive_fg))),
+        hint_area,
+    );
+}
+
+fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App) {
+    let area = frame.area();
+    let width = area.width.saturating_sub(6).clamp(28, 52);
+    let height = area.height.saturating_sub(6).clamp(6, 10);
+    let overlay = centered_rect(area, width, height);
+
+    let theme = &app.theme;
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.color(theme.div_line)))
+        .title(Span::styled(
+            " help ",
+            Style::default().fg(theme.color(theme.title)),
+        ));
+    let inner = block.inner(overlay);
+    frame.render_widget(block, overlay);
+
+    let text = Paragraph::new(vec![
+        Line::from(Span::styled(
+            "Help — milestone 11",
+            Style::default().fg(theme.color(theme.main_fg)),
+        )),
+        Line::from(Span::styled(
+            "Press Esc or q to go back",
+            Style::default().fg(theme.color(theme.inactive_fg)),
+        )),
+    ])
+    .alignment(Alignment::Center);
+    frame.render_widget(text, inner);
+}
+
+fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(width) / 2);
+    let y = area.y + (area.height.saturating_sub(height) / 2);
+    Rect {
+        x,
+        y,
+        width,
+        height,
+    }
 }
 
 fn build_column_layout(area: Rect, agg_header: &str) -> Vec<Rect> {
@@ -550,7 +771,6 @@ mod tests {
         assert!(tall.contains(" total "));
         assert!(tall.contains('%'));
         assert!(tall.contains("COMM"));
-        // Rows must render on their own lines, not on the header line.
         assert!(tall.lines().filter(|line| line.contains("MiB")).count() > 3);
 
         let short = render_to_string(100, 10);

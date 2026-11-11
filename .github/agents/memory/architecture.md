@@ -6,9 +6,10 @@
 src/
   main.rs            — clap CLI entry:
                        - if query args present OR stdout is non-tty: run query mode
-                       - else (tty + no query args): run ratatui loop via `ui::run_tui`
+                       - else (tty + no query args): load config, run ratatui loop via `ui::run_tui`,
+                         then save runtime settings when `save_on_exit=true`
                        Query flags: [PATTERN], --pid, --mem, --agg, --min, --sort, --top, --json, --base10
-                       Global UI flag: --update-ms (min-clamped to 100; default 2000)
+                       Global UI flag: --update-ms (min-clamped to 100)
   collect/
     mod.rs           — Snapshot API: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>
                        MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
@@ -26,16 +27,19 @@ src/
                        plain aligned table + JSON output wrapper { rows, total }
   ui/
     mod.rs           — `run_tui`: terminal lifecycle guard (alt screen/raw/mouse/cursor),
-                       panic hook restoration, crossterm event loop + tick scheduling
-    app.rs           — `App` state: snapshot/tree, agg mode, mem kind, update timing,
+                       panic hook restoration, crossterm event loop + tick scheduling; returns
+                       final `UiSettings` so main can persist them
+    app.rs           — `App` state: snapshot/tree, agg mode, mem kind, update timing, base10,
+                       save_on_exit, graph symbol selection, app modes (Normal/Menu/Options/Help),
                        tree expand/collapse state, sorting, selection+scroll, key/mouse handlers,
-                       periodic refresh on ticks, row hit-test cache for mouse toggles
+                       periodic refresh on ticks, row hit-test + menu hit-test caches
     draw.rs          — rounded-border frame, interactive process tree table, status+hint bars,
-                       gradient-colored memory columns, btop-style meters and tree glyphs
+                       gradient-colored memory columns, btop-style meters and tree glyphs,
+                       Esc menu overlay, options editor overlay, help placeholder overlay
     theme.rs         — named theme colors + 101-step gradients, 256-color fallback
     graph.rs         — `History` ring buffer, braille/block/tty graph rendering, ■ meter spans
-    menu.rs          — Esc overlay (Options/Help/Quit), Options editor, Help screens
-  config.rs          — ~/.config/pspp/pspp.conf (TOML), save_on_exit
+  config.rs          — config load/save (`$PSPP_CONFIG_DIR/pspp.conf` override else
+                       `~/.config/pspp/pspp.conf`), tolerant TOML reader, save_on_exit persistence
 tests/
   fixtures/          — synthetic process tables (deep chains, fan-out, orphans, pid reuse)
   model_tests.rs     — aggregation/sorting unit tests
@@ -122,7 +126,28 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - Block/tty: 1 sample/cell (`BLOCK_UP` diagonal, `TTY_UP` = ` ░░▒█`).
   - Row color = usage gradient at the row band's top pct (btop); height 1 colors each cell by its max sample.
   - Scale `max` = system total memory (`App::mem_graph_max`); values clamp.
-- `GraphSymbols::{detect(), from_term, parse, label}`; `App.graph_symbols` is the config hook for milestone 10.
+- `GraphSymbols::{detect(), from_term, parse, label}`; `App.graph_symbol` stores the user choice
+  (`auto|braille|block|tty`) and resolves to a concrete renderer at draw time.
 - `graph::meter_spans(theme, width, value, scale)`: per-cell gradient `■` filled part + `meter_bg` rest.
 - Layout: status line, then rounded " mem " box (6 rows: 3 graph + 1 summary line, hidden when the inner
   area is < 12 rows), table header, table body, hint bar.
+
+## Menus + config (milestone 10)
+
+- App mode enum: `AppMode::{Normal, Menu, Options, Help}`.
+  - `Esc` toggles menu from Normal.
+  - Menu keys: `↑/↓/j/k`, `Enter`, `Esc`; mouse click on button activates, click outside closes.
+- Menu buttons (centered overlay): `Options`, `Help`, `Quit`.
+  - Selected button uses double-line border + `hi_fg`; unselected uses single-line + `main_fg`.
+- Options overlay:
+  - Settings list: `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`,
+    `save_on_exit`, `sort_key`, `sort_reverse`.
+  - `update_ms`: Enter-to-edit digit buffer (`Enter` commit, `Esc` cancel), or `←/→` ±100.
+  - Other rows: `←/→` cycles/toggles; effects apply live to app rendering/sorting/refresh behavior.
+  - Bottom line shows per-option description text.
+- Help overlay is a milestone-10 placeholder box (`Help — milestone 11`).
+- Config schema (`serde` + TOML):
+  - `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`, `save_on_exit`,
+    `sort_key`, `sort_reverse`.
+  - `load()` is tolerant: missing file => defaults; unknown keys ignored; invalid values fallback.
+  - `save()` creates parent dir and writes TOML with a header comment.

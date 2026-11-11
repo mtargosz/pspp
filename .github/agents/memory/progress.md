@@ -14,7 +14,7 @@
 - [x] 7. theme-gradients — theme struct, 101-step gradients, 256-color fallback
 - [x] 8. tree-table-ui — expand/collapse, kb+mouse nav, gradient meters, aggregation toggle
 - [x] 9. graphs — braille history graph + meter bars (block/tty fallbacks)
-- [ ] 10. menus — Esc overlay, Options (General-style), config persistence
+- [x] 10. menus — Esc overlay, Options (General-style), config persistence
 - [ ] 11. help — plain-English memory explanations, filter (f, /)
 - [ ] 12. testing-pass — tester agent full pass
 - [ ] 13. review-pass — reviewer agent full pass
@@ -120,3 +120,27 @@
   - Fixed pre-existing bug from milestone 8: body rows were rendered at the header row's `y`
     (column rects were reused unchanged), so only the header line showed row text.
   - Tests: 11 graph unit tests + 1 `TestBackend` draw test. build/clippy/fmt/test green.
+
+### 2026-11-11 — coder
+- Completed milestone 10 menus/options/config persistence:
+  - Added `src/config.rs` with tolerant config load/save:
+    - Path resolution: `$PSPP_CONFIG_DIR/pspp.conf` override, else `dirs::config_dir()/pspp/pspp.conf`.
+    - Supported fields: `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`,
+      `save_on_exit`, `sort_key`, `sort_reverse`.
+    - Missing file returns defaults; unknown keys ignored; bad values fall back per-field.
+    - Save writes header-commented TOML and creates parent directories.
+  - Wired `main.rs` to load config at startup, apply CLI overrides, pass `UiSettings` into TUI,
+    and save runtime-edited settings on exit when `save_on_exit=true`.
+  - Implemented app mode system in `ui/app.rs`:
+    - `AppMode::{Normal, Menu, Options, Help}` with key routing by mode.
+    - Menu navigation/activation (`↑/↓/j/k`, Enter, Esc), plus mouse click button activate /
+      outside-click close behavior.
+    - Options editor interactions (live apply): update interval edit buffer, toggles/cycles for
+      mem kind, aggregation mode, graph symbol, unit base, save-on-exit, sort key, sort direction.
+  - Extended `ui/draw.rs` overlays:
+    - Centered Esc menu with stacked “big button” boxes; selected button uses double-line border.
+    - Options list overlay with selected-row highlight and per-option description line.
+    - Help placeholder overlay (`Help — milestone 11`).
+  - Added tests:
+    - `config.rs`: save/load roundtrip, missing-file defaults, garbage-file fallback.
+    - `ui/app.rs`: option-cycle helper behavior (index/sort/mem-kind/graph-symbol).

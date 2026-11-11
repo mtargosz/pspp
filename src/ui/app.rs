@@ -18,6 +18,17 @@ pub const MIN_UPDATE_MS: u64 = 100;
 const MOUSE_SCROLL_STEP: isize = 3;
 const DOUBLE_CLICK_MS: u64 = 350;
 const SORT_ORDER: [SortBy; 4] = [SortBy::Aggregated, SortBy::Own, SortBy::Pid, SortBy::Comm];
+const MENU_BUTTONS: [MenuButton; 3] = [MenuButton::Options, MenuButton::Help, MenuButton::Quit];
+const OPTION_KEYS: [OptionKey; 8] = [
+    OptionKey::UpdateMs,
+    OptionKey::MemKind,
+    OptionKey::AggMode,
+    OptionKey::GraphSymbol,
+    OptionKey::Base10,
+    OptionKey::SaveOnExit,
+    OptionKey::SortKey,
+    OptionKey::SortReverse,
+];
 
 pub fn clamp_update_ms(update_ms: u64) -> u64 {
     update_ms.max(MIN_UPDATE_MS)
@@ -29,6 +40,162 @@ pub fn next_tick_deadline(last_tick_at: Instant, update_ms: u64) -> Instant {
 
 pub fn remaining_until_tick(now: Instant, next_tick_at: Instant) -> Duration {
     next_tick_at.saturating_duration_since(now)
+}
+
+pub fn cycle_index(current: usize, len: usize, delta: isize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let len = len as isize;
+    ((current as isize + delta).rem_euclid(len)) as usize
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppMode {
+    Normal,
+    Menu,
+    Options,
+    Help,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuButton {
+    Options,
+    Help,
+    Quit,
+}
+
+impl MenuButton {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Options => "Options",
+            Self::Help => "Help",
+            Self::Quit => "Quit",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphSymbolSetting {
+    Auto,
+    Braille,
+    Block,
+    Tty,
+}
+
+impl GraphSymbolSetting {
+    pub fn from_config(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Self::Auto,
+            "braille" => Self::Braille,
+            "block" => Self::Block,
+            "tty" => Self::Tty,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn as_config(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Braille => "braille",
+            Self::Block => "block",
+            Self::Tty => "tty",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        self.as_config()
+    }
+
+    pub fn resolve(self) -> GraphSymbols {
+        match self {
+            Self::Auto => GraphSymbols::detect(),
+            Self::Braille => GraphSymbols::Braille,
+            Self::Block => GraphSymbols::Block,
+            Self::Tty => GraphSymbols::Tty,
+        }
+    }
+
+    pub fn cycle(self, delta: isize) -> Self {
+        const ORDER: [GraphSymbolSetting; 4] = [
+            GraphSymbolSetting::Auto,
+            GraphSymbolSetting::Braille,
+            GraphSymbolSetting::Block,
+            GraphSymbolSetting::Tty,
+        ];
+
+        let current = ORDER.iter().position(|value| *value == self).unwrap_or(0);
+        ORDER[cycle_index(current, ORDER.len(), delta)]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OptionKey {
+    UpdateMs,
+    MemKind,
+    AggMode,
+    GraphSymbol,
+    Base10,
+    SaveOnExit,
+    SortKey,
+    SortReverse,
+}
+
+impl OptionKey {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::UpdateMs => "update_ms",
+            Self::MemKind => "mem_kind",
+            Self::AggMode => "agg_mode",
+            Self::GraphSymbol => "graph_symbol",
+            Self::Base10 => "base10",
+            Self::SaveOnExit => "save_on_exit",
+            Self::SortKey => "sort_key",
+            Self::SortReverse => "sort_reverse",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::UpdateMs => {
+                "Refresh interval in milliseconds (minimum 100). Enter edits, ←/→ adjusts by 100."
+            }
+            Self::MemKind => "Memory field used by table and graph (platform-dependent kinds).",
+            Self::AggMode => "rollup sums descendants; flat sums direct children only.",
+            Self::GraphSymbol => "Graph glyph style: auto, braille, block, or tty.",
+            Self::Base10 => "Size units: false = KiB/MiB (1024), true = KB/MB (1000).",
+            Self::SaveOnExit => "Persist current options to pspp.conf when leaving TUI.",
+            Self::SortKey => "Primary sort key inside each tree sibling group.",
+            Self::SortReverse => "Sort direction: true = descending, false = ascending.",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiSettings {
+    pub update_ms: u64,
+    pub mem_kind: MemKind,
+    pub agg_mode: AggMode,
+    pub graph_symbol: GraphSymbolSetting,
+    pub base10: bool,
+    pub save_on_exit: bool,
+    pub sort_by: SortBy,
+    pub sort_reverse: bool,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            update_ms: DEFAULT_UPDATE_MS,
+            mem_kind: MemKind::Rss,
+            agg_mode: AggMode::Rollup,
+            graph_symbol: GraphSymbolSetting::Auto,
+            base10: false,
+            save_on_exit: true,
+            sort_by: SortBy::Aggregated,
+            sort_reverse: true,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -52,9 +219,12 @@ pub struct App {
     pub sort_by: SortBy,
     pub sort_desc: bool,
     pub update_ms: u64,
+    pub base10: bool,
+    pub save_on_exit: bool,
     pub theme: Theme,
     pub mem_history: History,
-    pub graph_symbols: GraphSymbols,
+    pub graph_symbol: GraphSymbolSetting,
+    pub mode: AppMode,
     pub should_quit: bool,
     pub last_tick_at: Instant,
     pub next_tick_at: Instant,
@@ -72,11 +242,27 @@ pub struct App {
     rendered_start: usize,
     rendered_toggle_zones: Vec<Option<Range<u16>>>,
     last_click: Option<(usize, Instant)>,
+
+    menu_selected: MenuButton,
+    menu_overlay_rect: Option<Rect>,
+    menu_button_rects: [Option<Rect>; 3],
+
+    option_selected: usize,
+    update_ms_editor: Option<String>,
 }
 
 impl App {
+    #[cfg(test)]
     pub fn new(update_ms: u64) -> Self {
-        let update_ms = clamp_update_ms(update_ms);
+        let settings = UiSettings {
+            update_ms,
+            ..UiSettings::default()
+        };
+        Self::from_settings(settings)
+    }
+
+    pub fn from_settings(settings: UiSettings) -> Self {
+        let update_ms = clamp_update_ms(settings.update_ms);
         let snapshot = collect::take_snapshot();
         let tree = ProcTree::build(&snapshot);
         let now = Instant::now();
@@ -85,14 +271,17 @@ impl App {
         let mut app = Self {
             snapshot,
             tree,
-            agg_mode: AggMode::Rollup,
-            mem_kind: MemKind::Rss,
-            sort_by: SortBy::Aggregated,
-            sort_desc: true,
+            agg_mode: settings.agg_mode,
+            mem_kind: settings.mem_kind,
+            sort_by: settings.sort_by,
+            sort_desc: settings.sort_reverse,
             update_ms,
+            base10: settings.base10,
+            save_on_exit: settings.save_on_exit,
             theme: Theme::detect(),
             mem_history: History::default(),
-            graph_symbols: GraphSymbols::detect(),
+            graph_symbol: settings.graph_symbol,
+            mode: AppMode::Normal,
             should_quit: false,
             last_tick_at: now,
             next_tick_at: next_tick_deadline(now, update_ms),
@@ -108,10 +297,32 @@ impl App {
             rendered_start: 0,
             rendered_toggle_zones: Vec::new(),
             last_click: None,
+            menu_selected: MenuButton::Options,
+            menu_overlay_rect: None,
+            menu_button_rects: [None, None, None],
+            option_selected: 0,
+            update_ms_editor: None,
         };
         app.record_mem_sample();
         app.rebuild_rows();
         app
+    }
+
+    pub fn ui_settings(&self) -> UiSettings {
+        UiSettings {
+            update_ms: self.update_ms,
+            mem_kind: self.mem_kind,
+            agg_mode: self.agg_mode,
+            graph_symbol: self.graph_symbol,
+            base10: self.base10,
+            save_on_exit: self.save_on_exit,
+            sort_by: self.sort_by,
+            sort_reverse: self.sort_desc,
+        }
+    }
+
+    pub fn resolved_graph_symbols(&self) -> GraphSymbols {
+        self.graph_symbol.resolve()
     }
 
     /// System-wide total of the selected memory kind across all processes.
@@ -126,6 +337,56 @@ impl App {
     /// Graph scale: total physical memory.
     pub fn mem_graph_max(&self) -> u64 {
         self.snapshot.total_mem
+    }
+
+    pub fn menu_buttons() -> &'static [MenuButton] {
+        &MENU_BUTTONS
+    }
+
+    pub fn menu_selected(&self) -> MenuButton {
+        self.menu_selected
+    }
+
+    pub fn option_keys() -> &'static [OptionKey] {
+        &OPTION_KEYS
+    }
+
+    pub fn option_selected_index(&self) -> usize {
+        self.option_selected
+    }
+
+    pub fn selected_option_key(&self) -> OptionKey {
+        OPTION_KEYS
+            .get(self.option_selected)
+            .copied()
+            .unwrap_or(OptionKey::UpdateMs)
+    }
+
+    pub fn selected_option_description(&self) -> &'static str {
+        self.selected_option_key().description()
+    }
+
+    pub fn option_value(&self, key: OptionKey) -> String {
+        match key {
+            OptionKey::UpdateMs => {
+                if self.selected_option_key() == OptionKey::UpdateMs {
+                    if let Some(buffer) = &self.update_ms_editor {
+                        return format!("{buffer}_");
+                    }
+                }
+                self.update_ms.to_string()
+            }
+            OptionKey::MemKind => self.mem_kind.label().to_ascii_lowercase(),
+            OptionKey::AggMode => match self.agg_mode {
+                AggMode::Rollup => "rollup".to_owned(),
+                AggMode::Flat => "flat".to_owned(),
+            },
+            OptionKey::GraphSymbol => self.graph_symbol.label().to_owned(),
+            OptionKey::Base10 => bool_label(self.base10).to_owned(),
+            OptionKey::SaveOnExit => bool_label(self.save_on_exit).to_owned(),
+            OptionKey::SortKey => sort_to_config(self.sort_by).to_owned(),
+            OptionKey::SortReverse => bool_label(self.sort_desc).to_owned(),
+        }
     }
 
     fn record_mem_sample(&mut self) {
@@ -171,37 +432,32 @@ impl App {
             return;
         }
 
-        match key_event.code {
-            KeyCode::Char(ch) if is_quit_key(ch, key_event.modifiers) => {
-                self.should_quit = true;
-            }
-            KeyCode::Up | KeyCode::Char('k') => self.move_cursor_by(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_cursor_by(1),
-            KeyCode::PageUp => self.move_cursor_by(-(self.page_step() as isize)),
-            KeyCode::PageDown => self.move_cursor_by(self.page_step() as isize),
-            KeyCode::Home | KeyCode::Char('g') => self.go_home(),
-            KeyCode::End | KeyCode::Char('G') => self.go_end(),
-            KeyCode::Enter | KeyCode::Char(' ') => self.toggle_selected_expand(),
-            KeyCode::Left => self.collapse_or_select_parent(),
-            KeyCode::Right => self.expand_selected(),
-            KeyCode::Char('e') | KeyCode::Char('E') => self.toggle_agg_mode(),
-            KeyCode::Char('m') | KeyCode::Char('M') => self.cycle_mem_kind(),
-            KeyCode::Char('s') => self.cycle_sort_key(),
-            KeyCode::Char('S') | KeyCode::Char('r') | KeyCode::Char('R') => self.reverse_sort(),
-            _ => {}
+        match self.mode {
+            AppMode::Normal => self.on_key_normal(key_event),
+            AppMode::Menu => self.on_key_menu(key_event),
+            AppMode::Options => self.on_key_options(key_event),
+            AppMode::Help => self.on_key_help(key_event),
         }
     }
 
     pub fn on_mouse(&mut self, mouse_event: MouseEvent) {
         self.last_mouse_position = Some((mouse_event.column, mouse_event.row));
 
-        match mouse_event.kind {
-            MouseEventKind::ScrollUp => self.move_cursor_by(-MOUSE_SCROLL_STEP),
-            MouseEventKind::ScrollDown => self.move_cursor_by(MOUSE_SCROLL_STEP),
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_left_click(mouse_event.column, mouse_event.row)
+        match self.mode {
+            AppMode::Normal => match mouse_event.kind {
+                MouseEventKind::ScrollUp => self.move_cursor_by(-MOUSE_SCROLL_STEP),
+                MouseEventKind::ScrollDown => self.move_cursor_by(MOUSE_SCROLL_STEP),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.handle_left_click(mouse_event.column, mouse_event.row)
+                }
+                _ => {}
+            },
+            AppMode::Menu => {
+                if matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Left)) {
+                    self.handle_menu_click(mouse_event.column, mouse_event.row);
+                }
             }
-            _ => {}
+            AppMode::Options | AppMode::Help => {}
         }
     }
 
@@ -240,6 +496,194 @@ impl App {
         self.comm_col_x = 0;
         self.rendered_start = 0;
         self.rendered_toggle_zones.clear();
+    }
+
+    pub fn set_menu_hit_test(&mut self, overlay_rect: Rect, button_rects: [Rect; 3]) {
+        self.menu_overlay_rect = Some(overlay_rect);
+        self.menu_button_rects = [
+            Some(button_rects[0]),
+            Some(button_rects[1]),
+            Some(button_rects[2]),
+        ];
+    }
+
+    pub fn clear_menu_hit_test(&mut self) {
+        self.menu_overlay_rect = None;
+        self.menu_button_rects = [None, None, None];
+    }
+
+    fn on_key_normal(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Esc => self.open_menu(),
+            KeyCode::Char(ch) if is_quit_key(ch, key_event.modifiers) => {
+                self.should_quit = true;
+            }
+            KeyCode::Up | KeyCode::Char('k') => self.move_cursor_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_cursor_by(1),
+            KeyCode::PageUp => self.move_cursor_by(-(self.page_step() as isize)),
+            KeyCode::PageDown => self.move_cursor_by(self.page_step() as isize),
+            KeyCode::Home | KeyCode::Char('g') => self.go_home(),
+            KeyCode::End | KeyCode::Char('G') => self.go_end(),
+            KeyCode::Enter | KeyCode::Char(' ') => self.toggle_selected_expand(),
+            KeyCode::Left => self.collapse_or_select_parent(),
+            KeyCode::Right => self.expand_selected(),
+            KeyCode::Char('e') | KeyCode::Char('E') => self.toggle_agg_mode(),
+            KeyCode::Char('m') | KeyCode::Char('M') => self.cycle_mem_kind(1),
+            KeyCode::Char('s') => self.cycle_sort_key(1),
+            KeyCode::Char('S') | KeyCode::Char('r') | KeyCode::Char('R') => self.reverse_sort(),
+            _ => {}
+        }
+    }
+
+    fn on_key_menu(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Esc => self.mode = AppMode::Normal,
+            KeyCode::Up | KeyCode::Char('k') => self.move_menu_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_menu_selection(1),
+            KeyCode::Enter => self.activate_menu_button(self.menu_selected),
+            _ => {}
+        }
+    }
+
+    fn on_key_options(&mut self, key_event: KeyEvent) {
+        if self.update_ms_editor.is_some() {
+            self.on_key_options_editing_update_ms(key_event);
+            return;
+        }
+
+        match key_event.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.mode = AppMode::Menu,
+            KeyCode::Up | KeyCode::Char('k') => self.move_option_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_option_selection(1),
+            KeyCode::Left => self.adjust_selected_option(-1),
+            KeyCode::Right => self.adjust_selected_option(1),
+            KeyCode::Enter => {
+                if self.selected_option_key() == OptionKey::UpdateMs {
+                    self.update_ms_editor = Some(self.update_ms.to_string());
+                } else {
+                    self.adjust_selected_option(1);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_key_options_editing_update_ms(&mut self, key_event: KeyEvent) {
+        let Some(editor) = self.update_ms_editor.as_mut() else {
+            return;
+        };
+
+        match key_event.code {
+            KeyCode::Esc => self.update_ms_editor = None,
+            KeyCode::Enter => {
+                if let Ok(parsed) = editor.parse::<u64>() {
+                    self.set_update_ms(parsed);
+                }
+                self.update_ms_editor = None;
+            }
+            KeyCode::Backspace => {
+                editor.pop();
+            }
+            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                editor.push(ch);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_key_help(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.mode = AppMode::Menu,
+            _ => {}
+        }
+    }
+
+    fn open_menu(&mut self) {
+        self.mode = AppMode::Menu;
+        self.update_ms_editor = None;
+    }
+
+    fn move_menu_selection(&mut self, delta: isize) {
+        let idx = MENU_BUTTONS
+            .iter()
+            .position(|button| *button == self.menu_selected)
+            .unwrap_or(0);
+        self.menu_selected = MENU_BUTTONS[cycle_index(idx, MENU_BUTTONS.len(), delta)];
+    }
+
+    fn activate_menu_button(&mut self, button: MenuButton) {
+        match button {
+            MenuButton::Options => {
+                self.mode = AppMode::Options;
+                self.update_ms_editor = None;
+            }
+            MenuButton::Help => {
+                self.mode = AppMode::Help;
+                self.update_ms_editor = None;
+            }
+            MenuButton::Quit => self.should_quit = true,
+        }
+    }
+
+    fn move_option_selection(&mut self, delta: isize) {
+        self.option_selected = cycle_index(self.option_selected, OPTION_KEYS.len(), delta);
+    }
+
+    fn adjust_selected_option(&mut self, delta: isize) {
+        match self.selected_option_key() {
+            OptionKey::UpdateMs => {
+                let step = 100_u64;
+                let mut value = self.update_ms;
+                let count = delta.unsigned_abs();
+                if delta >= 0 {
+                    for _ in 0..count {
+                        value = value.saturating_add(step);
+                    }
+                } else {
+                    for _ in 0..count {
+                        value = value.saturating_sub(step);
+                    }
+                }
+                self.set_update_ms(value);
+            }
+            OptionKey::MemKind => self.cycle_mem_kind(delta),
+            OptionKey::AggMode => self.toggle_agg_mode(),
+            OptionKey::GraphSymbol => {
+                self.graph_symbol = self.graph_symbol.cycle(delta);
+            }
+            OptionKey::Base10 => {
+                self.base10 = !self.base10;
+            }
+            OptionKey::SaveOnExit => {
+                self.save_on_exit = !self.save_on_exit;
+            }
+            OptionKey::SortKey => self.cycle_sort_key(delta),
+            OptionKey::SortReverse => self.reverse_sort(),
+        }
+    }
+
+    fn set_update_ms(&mut self, value: u64) {
+        self.update_ms = clamp_update_ms(value);
+        self.next_tick_at = next_tick_deadline(self.last_tick_at, self.update_ms);
+    }
+
+    fn handle_menu_click(&mut self, column: u16, row: u16) {
+        for (idx, button_rect) in self.menu_button_rects.iter().enumerate() {
+            if let Some(rect) = button_rect {
+                if point_in_rect(*rect, column, row) {
+                    let button = MENU_BUTTONS[idx];
+                    self.menu_selected = button;
+                    self.activate_menu_button(button);
+                    return;
+                }
+            }
+        }
+
+        if let Some(rect) = self.menu_overlay_rect {
+            if !point_in_rect(rect, column, row) {
+                self.mode = AppMode::Normal;
+            }
+        }
     }
 
     fn page_step(&self) -> usize {
@@ -350,31 +794,20 @@ impl App {
         self.rebuild_rows();
     }
 
-    fn cycle_mem_kind(&mut self) {
+    fn cycle_mem_kind(&mut self, delta: isize) {
         let available = MemKind::available();
         if available.is_empty() {
             return;
         }
 
-        let next = available
-            .iter()
-            .position(|kind| *kind == self.mem_kind)
-            .map(|idx| (idx + 1) % available.len())
-            .unwrap_or(0);
-
-        self.mem_kind = available[next];
+        self.mem_kind = cycle_mem_kind_value(self.mem_kind, delta, &available);
         self.mem_history.clear();
         self.record_mem_sample();
         self.rebuild_rows();
     }
 
-    fn cycle_sort_key(&mut self) {
-        let next = SORT_ORDER
-            .iter()
-            .position(|sort_by| *sort_by == self.sort_by)
-            .map(|idx| (idx + 1) % SORT_ORDER.len())
-            .unwrap_or(0);
-        self.sort_by = SORT_ORDER[next];
+    fn cycle_sort_key(&mut self, delta: isize) {
+        self.sort_by = cycle_sort_key_value(self.sort_by, delta);
         self.rebuild_rows();
     }
 
@@ -466,6 +899,83 @@ impl App {
 
         range.contains(&column)
     }
+}
+
+pub fn cycle_mem_kind_value(current: MemKind, delta: isize, available: &[MemKind]) -> MemKind {
+    if available.is_empty() {
+        return current;
+    }
+    let idx = available
+        .iter()
+        .position(|kind| *kind == current)
+        .unwrap_or(0);
+    available[cycle_index(idx, available.len(), delta)]
+}
+
+pub fn cycle_sort_key_value(current: SortBy, delta: isize) -> SortBy {
+    let idx = SORT_ORDER
+        .iter()
+        .position(|sort_by| *sort_by == current)
+        .unwrap_or(0);
+    SORT_ORDER[cycle_index(idx, SORT_ORDER.len(), delta)]
+}
+
+pub fn parse_mem_kind_config(value: &str) -> MemKind {
+    let parsed = match value.trim().to_ascii_lowercase().as_str() {
+        "rss" => MemKind::Rss,
+        "vsz" => MemKind::Vsz,
+        "footprint" => MemKind::Footprint,
+        "pss" => MemKind::Pss,
+        "uss" => MemKind::Uss,
+        "swap" => MemKind::Swap,
+        _ => MemKind::Rss,
+    };
+
+    if MemKind::available().contains(&parsed) {
+        parsed
+    } else {
+        MemKind::Rss
+    }
+}
+
+pub fn parse_agg_mode_config(value: &str) -> AggMode {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "flat" => AggMode::Flat,
+        _ => AggMode::Rollup,
+    }
+}
+
+pub fn parse_sort_config(value: &str) -> SortBy {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "own" => SortBy::Own,
+        "pid" => SortBy::Pid,
+        "comm" => SortBy::Comm,
+        _ => SortBy::Aggregated,
+    }
+}
+
+pub fn sort_to_config(sort_by: SortBy) -> &'static str {
+    match sort_by {
+        SortBy::Aggregated => "agg",
+        SortBy::Own => "own",
+        SortBy::Pid => "pid",
+        SortBy::Comm => "comm",
+    }
+}
+
+fn bool_label(value: bool) -> &'static str {
+    if value {
+        "true"
+    } else {
+        "false"
+    }
+}
+
+fn point_in_rect(rect: Rect, column: u16, row: u16) -> bool {
+    column >= rect.x
+        && column < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
 }
 
 fn remap_expanded_set(
@@ -616,7 +1126,11 @@ fn is_quit_key(ch: char, modifiers: KeyModifiers) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_tree_prefix, clamp_cursor_scroll, relocate_cursor_to_selected, DisplayRow};
+    use super::{
+        build_tree_prefix, clamp_cursor_scroll, cycle_index, cycle_mem_kind_value,
+        cycle_sort_key_value, relocate_cursor_to_selected, DisplayRow, GraphSymbolSetting,
+    };
+    use crate::model::{MemKind, SortBy};
     use std::ops::Range;
 
     fn row(pid: i32) -> DisplayRow {
@@ -663,5 +1177,51 @@ mod tests {
         assert_eq!(relocate_cursor_to_selected(Some(999), &rows, 3), 3);
         assert_eq!(relocate_cursor_to_selected(None, &rows, 99), 3);
         assert_eq!(relocate_cursor_to_selected(Some(30), &[], 4), 0);
+    }
+
+    #[test]
+    fn cycle_index_wraps_in_both_directions() {
+        assert_eq!(cycle_index(0, 4, -1), 3);
+        assert_eq!(cycle_index(3, 4, 1), 0);
+        assert_eq!(cycle_index(1, 4, 2), 3);
+        assert_eq!(cycle_index(1, 4, -2), 3);
+    }
+
+    #[test]
+    fn cycle_mem_kind_uses_available_list() {
+        let kinds = [MemKind::Rss, MemKind::Vsz, MemKind::Swap];
+        assert_eq!(cycle_mem_kind_value(MemKind::Rss, 1, &kinds), MemKind::Vsz);
+        assert_eq!(
+            cycle_mem_kind_value(MemKind::Rss, -1, &kinds),
+            MemKind::Swap
+        );
+        assert_eq!(
+            cycle_mem_kind_value(MemKind::Footprint, 1, &kinds),
+            MemKind::Vsz
+        );
+    }
+
+    #[test]
+    fn cycle_sort_keys_wraps() {
+        assert_eq!(cycle_sort_key_value(SortBy::Aggregated, 1), SortBy::Own);
+        assert_eq!(cycle_sort_key_value(SortBy::Comm, 1), SortBy::Aggregated);
+        assert_eq!(cycle_sort_key_value(SortBy::Aggregated, -1), SortBy::Comm);
+    }
+
+    #[test]
+    fn graph_symbol_setting_cycle_wraps() {
+        assert_eq!(
+            GraphSymbolSetting::Auto.cycle(1),
+            GraphSymbolSetting::Braille
+        );
+        assert_eq!(GraphSymbolSetting::Auto.cycle(-1), GraphSymbolSetting::Tty);
+        assert_eq!(
+            GraphSymbolSetting::from_config("block"),
+            GraphSymbolSetting::Block
+        );
+        assert_eq!(
+            GraphSymbolSetting::from_config("unknown"),
+            GraphSymbolSetting::Auto
+        );
     }
 }
