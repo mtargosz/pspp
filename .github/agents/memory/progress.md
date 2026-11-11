@@ -8,7 +8,7 @@
 - [x] 2. agent-profiles — all 7 profiles in `.github/agents/`
 - [x] 2b. memory-store — this directory, seeded
 - [x] 3. collector — cross-platform snapshot (RSS/VSZ; macOS footprint; Linux PSS/USS/swap)
-- [ ] 4. tree-model — forest, rollup + flat aggregation, sorting, unit tests
+- [x] 4. tree-model — forest, rollup + flat aggregation, sorting, unit tests
 - [ ] 5. query-mode — pspp <query> stdout mode (filters, --json)
 - [ ] 6. tui-skeleton — ratatui shell: alt screen, mouse, tick loop, resize, quit
 - [ ] 7. theme-gradients — theme struct, 101-step gradients, 256-color fallback
@@ -39,3 +39,17 @@
   `/proc/<pid>/smaps_rollup` for PSS/USS/swap with permission-safe fallback.
 - Added parser unit tests (including comm containing `) (`) and a live snapshot invariant test.
 - Added temporary `main.rs` stub that snapshots and prints process count + total RSS.
+
+### 2026-11-11 — coder
+- Completed milestone 4 model layer: added `src/model/mod.rs` + `src/model/tree.rs` and wired
+  `mod model;` in `main.rs`.
+- Implemented `MemKind` (`get`, `available`, `label`, `FromStr`) and tree construction from
+  `Snapshot` with deterministic ordering, synthetic-root semantics for orphan/self-link roots,
+  and cycle breaking/visited guards for traversal safety.
+- Added iterative aggregation in both modes (`AggMode::Rollup` and `AggMode::Flat`) with
+  saturating arithmetic, per-pid own/aggregate values, approximate flags, and child/descendant counts.
+- Added stable sorting helpers (`aggregated`, `own`, `pid`, `comm`) and
+  `flatten_visible(expanded)` depth-first row generation.
+- Added focused unit tests for deep-chain rollup/flat behavior, wide/orphan/self/cycle handling,
+  saturating addition, missing-value approximation, flattening collapse/expand behavior, and sorting.
+- Kept `main.rs` as a compiling smoke stub, now printing top rollup RSS parents.

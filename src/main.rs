@@ -1,17 +1,29 @@
 mod collect;
+pub mod model;
+
+use model::{MemKind, ProcTree, SortBy};
 
 fn main() {
     let snapshot = collect::take_snapshot();
-    let total_rss = snapshot
-        .procs
-        .iter()
-        .fold(0_u64, |acc, proc_rec| acc.saturating_add(proc_rec.mem.rss));
-    let _taken_at = snapshot.taken_at;
+    let tree = ProcTree::build(&snapshot);
+    let rollup = tree.rollup(MemKind::Rss);
+    let sorted = tree.sorted_pids(&rollup, SortBy::Aggregated);
 
     println!(
-        "processes: {}, total_rss: {} bytes, total_mem: {} bytes",
+        "processes: {}, total_mem: {} bytes, top rollup parents by rss:",
         snapshot.procs.len(),
-        total_rss,
         snapshot.total_mem
     );
+    for pid in sorted.into_iter().take(5) {
+        let Some(proc_rec) = tree.proc(pid) else {
+            continue;
+        };
+        let Some(row) = rollup.get(&pid) else {
+            continue;
+        };
+        println!(
+            "pid={} comm={} own={} agg={} children={}",
+            pid, proc_rec.comm, row.own, row.aggregated, row.child_count
+        );
+    }
 }

@@ -1,0 +1,586 @@
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
+
+use crate::collect::{ProcRec, Snapshot};
+use crate::model::MemKind;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AggMode {
+    Rollup,
+    Flat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum SortBy {
+    #[default]
+    Aggregated,
+    Own,
+    Pid,
+    Comm,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AggregateRow {
+    pub pid: i32,
+    pub own: u64,
+    pub own_approximate: bool,
+    pub aggregated: u64,
+    pub aggregated_approximate: bool,
+    pub child_count: usize,
+    pub descendant_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibleRow {
+    pub pid: i32,
+    pub depth: usize,
+    pub has_children: bool,
+    pub is_last_child: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ProcNode {
+    rec: ProcRec,
+    parent: Option<i32>,
+    children: Vec<i32>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProcTree {
+    nodes: HashMap<i32, ProcNode>,
+    ordered_pids: Vec<i32>,
+    root_children: Vec<i32>,
+}
+
+impl ProcTree {
+    pub fn build(snapshot: &Snapshot) -> ProcTree {
+        let mut nodes = HashMap::with_capacity(snapshot.procs.len());
+        for rec in &snapshot.procs {
+            nodes.entry(rec.pid).or_insert_with(|| ProcNode {
+                rec: rec.clone(),
+                parent: None,
+                children: Vec::new(),
+            });
+        }
+
+        let mut ordered_pids: Vec<i32> = nodes.keys().copied().collect();
+        ordered_pids.sort_unstable();
+
+        let pid_set: HashSet<i32> = ordered_pids.iter().copied().collect();
+        let mut parents: HashMap<i32, Option<i32>> = HashMap::with_capacity(ordered_pids.len());
+        for pid in &ordered_pids {
+            let ppid = nodes.get(pid).map(|node| node.rec.ppid).unwrap_or_default();
+            let parent = if *pid == 0 || ppid == *pid || !pid_set.contains(&ppid) {
+                None
+            } else {
+                Some(ppid)
+            };
+            parents.insert(*pid, parent);
+        }
+
+        Self::break_cycles(&ordered_pids, &mut parents);
+
+        let mut children_map: HashMap<i32, Vec<i32>> = HashMap::new();
+        for pid in &ordered_pids {
+            let parent = parents.get(pid).copied().flatten();
+            if let Some(node) = nodes.get_mut(pid) {
+                node.parent = parent;
+            }
+            if let Some(ppid) = parent {
+                children_map.entry(ppid).or_default().push(*pid);
+            }
+        }
+
+        for pid in &ordered_pids {
+            if let Some(node) = nodes.get_mut(pid) {
+                let mut children = children_map.remove(pid).unwrap_or_default();
+                children.sort_unstable();
+                node.children = children;
+            }
+        }
+
+        let mut root_children: Vec<i32> = ordered_pids
+            .iter()
+            .copied()
+            .filter(|pid| parents.get(pid).copied().flatten().is_none())
+            .collect();
+        root_children.sort_unstable();
+
+        ProcTree {
+            nodes,
+            ordered_pids,
+            root_children,
+        }
+    }
+
+    pub fn root_children(&self) -> &[i32] {
+        &self.root_children
+    }
+
+    pub fn proc(&self, pid: i32) -> Option<&ProcRec> {
+        self.nodes.get(&pid).map(|node| &node.rec)
+    }
+
+    pub fn aggregate(&self, kind: MemKind, mode: AggMode) -> HashMap<i32, AggregateRow> {
+        match mode {
+            AggMode::Rollup => self.rollup(kind),
+            AggMode::Flat => self.flat(kind),
+        }
+    }
+
+    pub fn rollup(&self, kind: MemKind) -> HashMap<i32, AggregateRow> {
+        let mut rows: HashMap<i32, AggregateRow> = HashMap::with_capacity(self.nodes.len());
+        let postorder = self.postorder();
+
+        for pid in postorder {
+            let Some(node) = self.nodes.get(&pid) else {
+                continue;
+            };
+
+            let (own, own_approximate) = Self::value_for(kind, node);
+            let mut aggregated = own;
+            let mut aggregated_approximate = own_approximate;
+            let mut descendant_count = 0_usize;
+
+            for child in &node.children {
+                let Some(child_row) = rows.get(child) else {
+                    aggregated_approximate = true;
+                    descendant_count = descendant_count.saturating_add(1);
+                    continue;
+                };
+
+                aggregated = aggregated.saturating_add(child_row.aggregated);
+                aggregated_approximate |= child_row.aggregated_approximate;
+                descendant_count =
+                    descendant_count.saturating_add(child_row.descendant_count.saturating_add(1));
+            }
+
+            rows.insert(
+                pid,
+                AggregateRow {
+                    pid,
+                    own,
+                    own_approximate,
+                    aggregated,
+                    aggregated_approximate,
+                    child_count: node.children.len(),
+                    descendant_count,
+                },
+            );
+        }
+
+        rows
+    }
+
+    /// Flat mode sums direct children only.
+    /// The parent's own memory is not included in `aggregated` and remains in `own`.
+    pub fn flat(&self, kind: MemKind) -> HashMap<i32, AggregateRow> {
+        let mut rows = HashMap::with_capacity(self.nodes.len());
+        let descendant_counts = self.descendant_counts();
+
+        for pid in &self.ordered_pids {
+            let Some(node) = self.nodes.get(pid) else {
+                continue;
+            };
+
+            let (own, own_approximate) = Self::value_for(kind, node);
+            let mut aggregated = 0_u64;
+            let mut aggregated_approximate = false;
+
+            if !node.children.is_empty() {
+                for child in &node.children {
+                    let Some(child_node) = self.nodes.get(child) else {
+                        aggregated_approximate = true;
+                        continue;
+                    };
+
+                    let (child_own, child_own_approximate) = Self::value_for(kind, child_node);
+                    aggregated = aggregated.saturating_add(child_own);
+                    aggregated_approximate |= child_own_approximate;
+                }
+            }
+
+            rows.insert(
+                *pid,
+                AggregateRow {
+                    pid: *pid,
+                    own,
+                    own_approximate,
+                    aggregated,
+                    aggregated_approximate,
+                    child_count: node.children.len(),
+                    descendant_count: *descendant_counts.get(pid).unwrap_or(&0),
+                },
+            );
+        }
+
+        rows
+    }
+
+    pub fn sorted_pids(&self, rows: &HashMap<i32, AggregateRow>, sort_by: SortBy) -> Vec<i32> {
+        let mut pids = self.ordered_pids.clone();
+        match sort_by {
+            SortBy::Aggregated => {
+                pids.sort_by(|a, b| Self::cmp_desc(rows.get(a), rows.get(b), |row| row.aggregated))
+            }
+            SortBy::Own => {
+                pids.sort_by(|a, b| Self::cmp_desc(rows.get(a), rows.get(b), |row| row.own))
+            }
+            SortBy::Pid => pids.sort(),
+            SortBy::Comm => pids.sort_by(|a, b| {
+                let a_comm = self
+                    .nodes
+                    .get(a)
+                    .map(|node| node.rec.comm.as_str())
+                    .unwrap_or_default();
+                let b_comm = self
+                    .nodes
+                    .get(b)
+                    .map(|node| node.rec.comm.as_str())
+                    .unwrap_or_default();
+                a_comm.cmp(b_comm)
+            }),
+        }
+        pids
+    }
+
+    pub fn flatten_visible(&self, expanded: &HashSet<i32>) -> Vec<VisibleRow> {
+        let mut rows = Vec::with_capacity(self.nodes.len());
+        let mut visited = HashSet::with_capacity(self.nodes.len());
+        let mut stack: Vec<(i32, usize, bool)> = Vec::new();
+
+        for (idx, pid) in self.root_children.iter().enumerate().rev() {
+            stack.push((*pid, 0, idx == self.root_children.len().saturating_sub(1)));
+        }
+
+        while let Some((pid, depth, is_last_child)) = stack.pop() {
+            if !visited.insert(pid) {
+                continue;
+            }
+
+            let Some(node) = self.nodes.get(&pid) else {
+                continue;
+            };
+
+            let has_children = !node.children.is_empty();
+            rows.push(VisibleRow {
+                pid,
+                depth,
+                has_children,
+                is_last_child,
+            });
+
+            if has_children && expanded.contains(&pid) {
+                for (idx, child) in node.children.iter().enumerate().rev() {
+                    stack.push((
+                        *child,
+                        depth.saturating_add(1),
+                        idx == node.children.len().saturating_sub(1),
+                    ));
+                }
+            }
+        }
+
+        rows
+    }
+
+    fn break_cycles(ordered_pids: &[i32], parents: &mut HashMap<i32, Option<i32>>) {
+        let mut state: HashMap<i32, u8> = ordered_pids.iter().map(|pid| (*pid, 0_u8)).collect();
+
+        for start in ordered_pids {
+            if state.get(start).copied().unwrap_or(2) != 0 {
+                continue;
+            }
+
+            let mut path = Vec::new();
+            let mut path_index = HashMap::new();
+            let mut current = *start;
+
+            loop {
+                if state.get(&current).copied().unwrap_or(2) == 2 {
+                    break;
+                }
+
+                if let Some(cycle_start) = path_index.get(&current).copied() {
+                    if let Some(cycle_break_pid) = path[cycle_start..].iter().min().copied() {
+                        parents.insert(cycle_break_pid, None);
+                    }
+                    break;
+                }
+
+                path_index.insert(current, path.len());
+                path.push(current);
+                state.insert(current, 1);
+
+                let Some(next) = parents.get(&current).copied().flatten() else {
+                    break;
+                };
+                if !state.contains_key(&next) {
+                    break;
+                }
+                current = next;
+            }
+
+            for pid in path {
+                state.insert(pid, 2);
+            }
+        }
+    }
+
+    fn postorder(&self) -> Vec<i32> {
+        let mut order = Vec::with_capacity(self.nodes.len());
+        let mut seen = HashSet::with_capacity(self.nodes.len());
+        let mut stack: Vec<(i32, bool)> = Vec::new();
+
+        for pid in self.root_children.iter().rev() {
+            stack.push((*pid, false));
+        }
+
+        while let Some((pid, expanded)) = stack.pop() {
+            if expanded {
+                order.push(pid);
+                continue;
+            }
+            if !seen.insert(pid) {
+                continue;
+            }
+
+            stack.push((pid, true));
+            if let Some(node) = self.nodes.get(&pid) {
+                for child in node.children.iter().rev() {
+                    if seen.contains(child) {
+                        continue;
+                    }
+                    stack.push((*child, false));
+                }
+            }
+        }
+
+        for pid in &self.ordered_pids {
+            if seen.contains(pid) {
+                continue;
+            }
+            stack.push((*pid, false));
+            while let Some((walk_pid, expanded)) = stack.pop() {
+                if expanded {
+                    order.push(walk_pid);
+                    continue;
+                }
+                if !seen.insert(walk_pid) {
+                    continue;
+                }
+                stack.push((walk_pid, true));
+                if let Some(node) = self.nodes.get(&walk_pid) {
+                    for child in node.children.iter().rev() {
+                        if seen.contains(child) {
+                            continue;
+                        }
+                        stack.push((*child, false));
+                    }
+                }
+            }
+        }
+
+        order
+    }
+
+    fn descendant_counts(&self) -> HashMap<i32, usize> {
+        let mut counts: HashMap<i32, usize> = HashMap::with_capacity(self.nodes.len());
+        for pid in self.postorder() {
+            let mut total = 0_usize;
+            if let Some(node) = self.nodes.get(&pid) {
+                for child in &node.children {
+                    let child_desc = counts.get(child).copied().unwrap_or(0);
+                    total = total.saturating_add(child_desc.saturating_add(1));
+                }
+            }
+            counts.insert(pid, total);
+        }
+        counts
+    }
+
+    fn value_for(kind: MemKind, node: &ProcNode) -> (u64, bool) {
+        match kind.get(&node.rec.mem) {
+            Some(value) => (value, false),
+            None => (0, true),
+        }
+    }
+
+    fn cmp_desc(
+        a: Option<&AggregateRow>,
+        b: Option<&AggregateRow>,
+        value: impl Fn(&AggregateRow) -> u64,
+    ) -> Ordering {
+        let a_val = a.map(&value).unwrap_or(0);
+        let b_val = b.map(value).unwrap_or(0);
+        b_val.cmp(&a_val)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::time::Instant;
+
+    use crate::collect::{MemSet, ProcRec, Snapshot};
+    use crate::model::{AggMode, MemKind, ProcTree, SortBy};
+
+    fn mem(rss: u64) -> MemSet {
+        MemSet {
+            rss,
+            vsz: rss,
+            footprint: None,
+            pss: None,
+            uss: None,
+            swap: None,
+            approximate: false,
+        }
+    }
+
+    fn proc(pid: i32, ppid: i32, comm: &str, rss: u64) -> ProcRec {
+        ProcRec {
+            pid,
+            ppid,
+            comm: comm.to_owned(),
+            mem: mem(rss),
+        }
+    }
+
+    fn snapshot(procs: Vec<ProcRec>) -> Snapshot {
+        Snapshot {
+            procs,
+            total_mem: 0,
+            taken_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn deep_chain_rollup_and_flat_match_requirements() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(1, 0, "a", 10),
+            proc(2, 1, "b", 20),
+            proc(3, 2, "c", 30),
+            proc(4, 3, "d", 40),
+        ]));
+
+        let rollup = tree.rollup(MemKind::Rss);
+        let flat = tree.flat(MemKind::Rss);
+        let via_mode = tree.aggregate(MemKind::Rss, AggMode::Rollup);
+
+        assert_eq!(rollup.get(&1).map(|row| row.aggregated), Some(100));
+        assert_eq!(rollup.get(&1).map(|row| row.descendant_count), Some(3));
+        assert_eq!(flat.get(&1).map(|row| row.aggregated), Some(20));
+        assert_eq!(flat.get(&1).map(|row| row.own), Some(10));
+        assert_eq!(rollup.get(&1), via_mode.get(&1));
+    }
+
+    #[test]
+    fn build_attaches_orphans_self_links_and_cycles_to_root_safely() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(0, 1, "real-zero", 9),
+            proc(1, 0, "root", 1),
+            proc(2, 1, "child-a", 2),
+            proc(3, 1, "child-b", 3),
+            proc(4, 9999, "orphan", 4),
+            proc(5, 5, "self-link", 5),
+            proc(6, 7, "cycle-a", 6),
+            proc(7, 6, "cycle-b", 7),
+        ]));
+
+        assert_eq!(tree.root_children(), &[0, 4, 5, 6]);
+        assert_eq!(
+            tree.nodes
+                .get(&1)
+                .map(|node| node.children.clone())
+                .unwrap_or_default(),
+            vec![2, 3]
+        );
+        assert_eq!(
+            tree.nodes
+                .get(&6)
+                .map(|node| node.children.clone())
+                .unwrap_or_default(),
+            vec![7]
+        );
+        assert_eq!(
+            tree.flatten_visible(&HashSet::from([0, 1, 6]))
+                .iter()
+                .map(|row| row.pid)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
+    }
+
+    #[test]
+    fn rollup_uses_saturating_add() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(1, 0, "a", u64::MAX),
+            proc(2, 1, "b", 10),
+        ]));
+        let rollup = tree.rollup(MemKind::Rss);
+        assert_eq!(rollup.get(&1).map(|row| row.aggregated), Some(u64::MAX));
+    }
+
+    #[test]
+    fn missing_values_mark_aggregate_as_approximate() {
+        let mut root = proc(1, 0, "a", 10);
+        root.mem.pss = Some(42);
+        let mut child = proc(2, 1, "b", 20);
+        child.mem.pss = None;
+
+        let tree = ProcTree::build(&snapshot(vec![root, child]));
+        let rollup = tree.rollup(MemKind::Pss);
+
+        assert_eq!(rollup.get(&1).map(|row| row.aggregated), Some(42));
+        assert_eq!(
+            rollup.get(&1).map(|row| row.aggregated_approximate),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn flatten_visible_respects_expanded_state() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(1, 0, "a", 1),
+            proc(2, 1, "b", 2),
+            proc(3, 1, "c", 3),
+            proc(4, 2, "d", 4),
+        ]));
+
+        let collapsed = tree.flatten_visible(&HashSet::new());
+        assert_eq!(
+            collapsed.iter().map(|row| row.pid).collect::<Vec<_>>(),
+            vec![1]
+        );
+
+        let expanded_root = tree.flatten_visible(&HashSet::from([1]));
+        assert_eq!(
+            expanded_root.iter().map(|row| row.pid).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+
+        let expanded_two_levels = tree.flatten_visible(&HashSet::from([1, 2]));
+        assert_eq!(
+            expanded_two_levels
+                .iter()
+                .map(|row| (row.pid, row.depth, row.is_last_child))
+                .collect::<Vec<_>>(),
+            vec![(1, 0, true), (2, 1, false), (4, 2, true), (3, 1, true)]
+        );
+    }
+
+    #[test]
+    fn sorting_helpers_are_stable() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(1, 0, "z", 5),
+            proc(2, 0, "a", 5),
+            proc(3, 0, "b", 1),
+        ]));
+        let rows = tree.rollup(MemKind::Rss);
+
+        assert_eq!(tree.sorted_pids(&rows, SortBy::Aggregated), vec![1, 2, 3]);
+        assert_eq!(tree.sorted_pids(&rows, SortBy::Own), vec![1, 2, 3]);
+        assert_eq!(tree.sorted_pids(&rows, SortBy::Pid), vec![1, 2, 3]);
+        assert_eq!(tree.sorted_pids(&rows, SortBy::Comm), vec![2, 3, 1]);
+    }
+}

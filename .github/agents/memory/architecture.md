@@ -12,8 +12,10 @@ src/
     linux.rs         — /proc/<pid>/stat (pid/ppid/comm/rss/vsz) + smaps_rollup (pss/uss/swap);
                        permission/malformed-input fallback to RSS/VSZ-only records
   model/
-    tree.rs          — pid→ppid forest (orphans → synthetic root); subtree rollup sums; flat
-                       direct-children sums; sorting by any memory column; stable across refreshes
+    mod.rs           — MemKind enum + parsing/labels/platform availability; model exports
+    tree.rs          — pid→ppid forest (orphans/self-links/cycles → synthetic root children),
+                       iterative rollup/flat aggregation, deterministic child ordering, visible flattening,
+                       stable sorting helpers
   query/
     mod.rs           — non-interactive mode: name/pid filter, --mem type, --min threshold,
                        plain-table and --json output
@@ -41,3 +43,19 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - Sums use u64 with saturating adds.
 - Snapshot is immutable once taken; UI never mutates it (new snapshot per tick).
 - Terminal state (alt screen, mouse, cursor) restored via RAII guard + panic hook.
+
+## `model` public API (milestone 4)
+
+- `enum MemKind { Rss, Vsz, Footprint, Pss, Uss, Swap }`
+  - `get(&MemSet) -> Option<u64>`
+  - `available() -> Vec<MemKind>` (`footprint` only on macOS; `pss/uss/swap` only on Linux)
+  - `label() -> &'static str`
+  - `FromStr` for CLI values: `rss|vsz|footprint|pss|uss|swap`
+- `ProcTree::build(&Snapshot) -> ProcTree`
+  - forest from pid→ppid links; orphan/self-link/cycle-safe with synthetic root semantics
+- `enum AggMode { Rollup, Flat }`
+- `ProcTree::{aggregate, rollup, flat}`
+  - return per-pid `AggregateRow { own, own_approximate, aggregated, aggregated_approximate, child_count, descendant_count }`
+- `ProcTree::sorted_pids(..., SortBy::{Aggregated, Own, Pid, Comm}) -> Vec<i32>` (stable)
+- `ProcTree::flatten_visible(&HashSet<i32>) -> Vec<VisibleRow>`
+  - depth-first visible rows: `{ pid, depth, has_children, is_last_child }`; synthetic root not emitted
