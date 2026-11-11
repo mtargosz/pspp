@@ -1192,3 +1192,315 @@ mod tests {
         assert_eq!(text(AppMode::Normal, 0), "");
     }
 }
+
+/// Whole-screen `TestBackend` tests over a deterministic 4-level synthetic tree.
+#[cfg(test)]
+mod screens {
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::style::Color;
+    use ratatui::Terminal;
+
+    use super::draw;
+    use crate::collect::{MemSet, ProcRec, Snapshot};
+    use crate::model::{AggMode, MemKind};
+    use crate::ui::app::{App, GraphSymbolSetting, UiSettings};
+
+    const MIB: u64 = 1024 * 1024;
+    const WIDTH: u16 = 110;
+    const HEIGHT: u16 = 30;
+
+    // launchd(100) ─┬─ shell(200) ─┬─ editor(300) ── plugin(400, footprint unknown)
+    //               │              └─ build(50)
+    //               └─ daemon(500)
+    // stray(60)
+    fn synthetic_app(agg_mode: AggMode, symbols: GraphSymbolSetting, filter: Option<&str>) -> App {
+        let rec = |pid, ppid, comm: &str, mib: u64, known: bool| ProcRec {
+            pid,
+            ppid,
+            comm: comm.into(),
+            mem: MemSet {
+                rss: mib * MIB,
+                footprint: known.then_some(mib * MIB),
+                ..MemSet::default()
+            },
+        };
+        let snapshot = Snapshot {
+            procs: vec![
+                rec(1, 0, "launchd", 100, true),
+                rec(2, 1, "shell", 200, true),
+                rec(3, 2, "editor", 300, true),
+                rec(4, 3, "plugin", 400, false),
+                rec(5, 2, "build", 50, true),
+                rec(6, 1, "daemon", 500, true),
+                rec(7, 0, "stray", 60, true),
+            ],
+            total_mem: 4096 * MIB,
+            used_mem: 2048 * MIB,
+        };
+        let settings = UiSettings {
+            mem_kind: MemKind::Footprint,
+            agg_mode,
+            graph_symbol: symbols,
+            truecolor: crate::ui::theme::TruecolorMode::On,
+            ..UiSettings::default()
+        };
+        let mut app = App::with_snapshot(snapshot, settings);
+        for pct in [10, 30, 50, 70, 90, 100, 60, 40, 20, 80] {
+            app.mem_history.push(4096 * MIB / 100 * pct);
+        }
+        if let Some(text) = filter {
+            app.set_filter(text);
+        }
+        app
+    }
+
+    fn render(app: &mut App) -> (Vec<String>, Buffer) {
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("terminal");
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let lines = (0..HEIGHT)
+            .map(|y| {
+                (0..WIDTH)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect();
+        (lines, buffer)
+    }
+
+    /// The table row for `comm`: `(y, text without the frame's left border)`.
+    fn row_of<'a>(lines: &'a [String], comm: &str) -> (usize, &'a str) {
+        lines
+            .iter()
+            .enumerate()
+            .find(|(_, line)| {
+                line.contains(&format!(" {comm} "))
+                    || line.contains(&format!("─ {comm} "))
+                    || line.starts_with(&format!("│{comm} "))
+                    || line.contains(&format!("] {comm} "))
+            })
+            .map(|(y, line)| (y, line.strip_prefix('│').unwrap_or(line)))
+            .unwrap_or_else(|| panic!("no row for {comm}:\n{}", lines.join("\n")))
+    }
+
+    fn has_row(lines: &[String], comm: &str) -> bool {
+        lines.iter().any(|line| {
+            line.strip_prefix('│')
+                .is_some_and(|rest| rest.split_whitespace().any(|word| word == comm))
+        })
+    }
+
+    /// Number of METER cells on screen row `y` drawn in a "filled" (non-background) colour.
+    fn filled_meter_cells(app: &App, buffer: &Buffer, lines: &[String], y: usize) -> usize {
+        let header = lines
+            .iter()
+            .find(|line| line.contains("METER"))
+            .expect("header line");
+        // Column (in cells) of the METER title; every glyph in these lines is single-width.
+        let meter_x = header
+            .find("METER")
+            .map(|byte| header[..byte].chars().count())
+            .unwrap_or(0);
+        let empty = app.theme.color(app.theme.meter_bg);
+        (meter_x..meter_x + 12)
+            .filter(|x| {
+                let cell = &buffer[(
+                    u16::try_from(*x).unwrap_or(0),
+                    u16::try_from(y).unwrap_or(0),
+                )];
+                cell.symbol() == "■" && cell.fg != empty
+            })
+            .count()
+    }
+
+    #[test]
+    fn rollup_screen_shows_tree_glyphs_sums_and_approximate_markers() {
+        for symbols in [
+            GraphSymbolSetting::Braille,
+            GraphSymbolSetting::Block,
+            GraphSymbolSetting::Tty,
+        ] {
+            let mut app = synthetic_app(AggMode::Rollup, symbols, None);
+            let (lines, _) = render(&mut app);
+            let body = |comm| row_of(&lines, comm).1.to_owned();
+
+            assert!(lines[1].contains("agg rollup") && lines[1].contains("used 2.0 GiB / 4.0 GiB"));
+            assert!(
+                lines.iter().any(|l| l.contains("FOOTPRINT Σ~")),
+                "approx header"
+            );
+
+            // Tree glyphs, depth by depth.
+            assert!(
+                body("launchd").starts_with("[-] launchd"),
+                "{}",
+                body("launchd")
+            );
+            assert!(body("shell").starts_with("├─ [-] shell"));
+            assert!(body("editor").starts_with("│  ├─ [-] editor"));
+            assert!(body("plugin").starts_with("│  │  └─ plugin"));
+            assert!(body("build").starts_with("│  └─ build"));
+            assert!(body("daemon").starts_with("└─ daemon"));
+            assert!(body("stray").starts_with("stray"));
+
+            // Σ values (rollup) with `~` wherever the unknown footprint feeds in.
+            assert!(body("launchd").contains("1.1 GiB~"), "{}", body("launchd"));
+            assert!(body("shell").contains("550.0 MiB~"));
+            assert!(body("editor").contains("300.0 MiB~"));
+            assert!(body("plugin").contains("0 B~"));
+            assert!(body("build").contains("50.0 MiB") && !body("build").contains('~'));
+            assert!(body("daemon").contains("500.0 MiB") && !body("daemon").contains('~'));
+            assert!(body("launchd").contains("28.1%"), "% of 4 GiB RAM");
+        }
+    }
+
+    #[test]
+    fn flat_screen_sums_direct_children_only() {
+        let mut app = synthetic_app(AggMode::Flat, GraphSymbolSetting::Braille, None);
+        let (lines, _) = render(&mut app);
+        let body = |comm| row_of(&lines, comm).1.to_owned();
+
+        assert!(lines[1].contains("agg flat"));
+        // launchd's own 100 MiB is excluded: shell(200) + daemon(500).
+        assert!(body("launchd").contains("100.0 MiB") && body("launchd").contains("700.0 MiB"));
+        assert!(body("shell").contains("350.0 MiB"), "{}", body("shell"));
+        assert!(
+            body("editor").contains("0 B~"),
+            "its only child has unknown footprint"
+        );
+        assert!(body("build").contains("0 B"));
+        assert_eq!(body("daemon").matches("500.0 MiB").count(), 1, "own only");
+        assert!(body("daemon").contains(" 0 B "), "flat Σ of a leaf is 0");
+        assert!(body("launchd").starts_with("[-] launchd"));
+        assert!(body("plugin").starts_with("│  │  └─ plugin"));
+    }
+
+    #[test]
+    fn filtered_screen_keeps_matches_and_ancestors_only() {
+        for mode in [AggMode::Rollup, AggMode::Flat] {
+            let mut app = synthetic_app(mode, GraphSymbolSetting::Block, Some("plug"));
+            let (lines, buffer) = render(&mut app);
+
+            for shown in ["launchd", "shell", "editor", "plugin"] {
+                assert!(has_row(&lines, shown), "{mode:?}: {shown} must stay");
+            }
+            for hidden in ["build", "daemon", "stray"] {
+                assert!(
+                    !has_row(&lines, hidden),
+                    "{mode:?}: {hidden} must be filtered out"
+                );
+            }
+            assert!(lines[1].contains("filter: plug"));
+
+            // Hidden later siblings leave no dangling `├─`: the chain is all `└─`.
+            assert!(row_of(&lines, "shell").1.starts_with("└─ [-] shell"));
+            assert!(row_of(&lines, "editor").1.starts_with("   └─ [-] editor"));
+            assert!(row_of(&lines, "plugin").1.starts_with("      └─ plugin"));
+
+            // Direct match highlighted, context ancestors dimmed.
+            let (y, line) = row_of(&lines, "plugin");
+            let x = line
+                .find("plugin")
+                .map(|byte| line[..byte].chars().count() + 1)
+                .unwrap_or(0);
+            let direct = &buffer[(u16::try_from(x).unwrap_or(0), u16::try_from(y).unwrap_or(0))];
+            assert_eq!(direct.fg, app.theme.color(app.theme.hi_fg));
+            let (y, line) = row_of(&lines, "shell");
+            let x = line
+                .find("shell")
+                .map(|byte| line[..byte].chars().count() + 1)
+                .unwrap_or(0);
+            let context = &buffer[(u16::try_from(x).unwrap_or(0), u16::try_from(y).unwrap_or(0))];
+            assert_eq!(context.fg, app.theme.color(app.theme.inactive_fg));
+        }
+    }
+
+    #[test]
+    fn collapsed_node_stays_collapsed_while_filtering() {
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, Some("plug"));
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let press = |app: &mut App, code| app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+        press(&mut app, KeyCode::Down); // select shell
+        press(&mut app, KeyCode::Left); // collapse it
+        let (lines, _) = render(&mut app);
+        assert!(has_row(&lines, "shell"));
+        assert!(!has_row(&lines, "editor") && !has_row(&lines, "plugin"));
+        assert!(row_of(&lines, "shell").1.starts_with("└─ [+] shell"));
+    }
+
+    #[test]
+    fn meter_fill_tracks_each_rows_share_of_the_largest_sum() {
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        let (lines, buffer) = render(&mut app);
+        // Scale = launchd's 1150 MiB over 12 cells (launchd itself is the selected row).
+        let expected = [
+            ("shell", 6),
+            ("editor", 3),
+            ("daemon", 5),
+            ("build", 1),
+            ("stray", 1),
+            ("plugin", 0),
+        ];
+        for (comm, filled) in expected {
+            let (y, _) = row_of(&lines, comm);
+            assert_eq!(
+                filled_meter_cells(&app, &buffer, &lines, y),
+                filled,
+                "{comm}"
+            );
+        }
+        // Rows are never recoloured to a Reset/default colour.
+        let (y, _) = row_of(&lines, "shell");
+        assert_ne!(buffer[(5, u16::try_from(y).unwrap_or(0))].fg, Color::Reset);
+    }
+
+    #[test]
+    fn memory_graph_uses_the_selected_glyph_family() {
+        let braille = |c: char| ('\u{2801}'..='\u{28ff}').contains(&c);
+        let block_only = |c: char| "▗▐▖▄▟▌▙".contains(c);
+        let tty_only = |c: char| "░▒".contains(c);
+
+        for (symbols, expect) in [
+            (GraphSymbolSetting::Braille, 0),
+            (GraphSymbolSetting::Block, 1),
+            (GraphSymbolSetting::Tty, 2),
+        ] {
+            let mut app = synthetic_app(AggMode::Rollup, symbols, None);
+            let (lines, _) = render(&mut app);
+            // Graph rows live inside the `mem` box (screen rows 3..=5).
+            let graph: String = lines[3..=5].join("");
+            let counts = (
+                graph.chars().filter(|c| braille(*c)).count(),
+                graph.chars().filter(|c| block_only(*c)).count(),
+                graph.chars().filter(|c| tty_only(*c)).count(),
+            );
+            match expect {
+                0 => assert!(
+                    counts.0 > 0 && counts.1 == 0 && counts.2 == 0,
+                    "braille {counts:?}"
+                ),
+                1 => assert!(
+                    counts.1 > 0 && counts.0 == 0 && counts.2 == 0,
+                    "block {counts:?}"
+                ),
+                _ => assert!(
+                    counts.2 > 0 && counts.0 == 0 && counts.1 == 0,
+                    "tty {counts:?}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn mem_box_summary_names_used_total_and_sigma() {
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        let (lines, _) = render(&mut app);
+        let summary = lines
+            .iter()
+            .find(|l| l.contains("used 2.0 GiB / 4.0 GiB ■"))
+            .expect("summary line");
+        assert!(summary.contains("50%"), "{summary}");
+        assert!(summary.contains("Σ FOOTPRINT 1.2 GiB"), "{summary}");
+    }
+}

@@ -139,3 +139,15 @@ Per-agent models set in profile frontmatter:
   `total_mem`/`used_mem`. `App` no longer stores a `Snapshot`; `query::run_query` also takes `Snapshot` by value.
 - **`Snapshot::taken_at` removed** (was dead; chosen over a "sample age" indicator — M23's choice is made here).
 - PID column width = digits of the largest pid present, min 5.
+
+## 2026-11-11 — M22
+
+- **Library + binary split**: `src/lib.rs` now owns all modules; `main.rs` is the CLI shell. Needed so
+  `tests/model_tests.rs` can drive the model through the public API (a bin-only crate cannot be imported
+  by integration tests). Side effect: public items are no longer dead-code-checked as aggressively.
+- **Filtered view recomputes `is_last_child` among visible siblings** (`relabel_last_children`) so hidden later
+  siblings no longer leave dangling `├─` glyphs (found while writing the filtered screen tests).
+- **CI** runs `build`, `test`, `clippy --all-targets -D warnings`, `fmt --check`, `doc --no-deps` on
+  macos-latest and ubuntu-latest with `RUSTFLAGS`/`RUSTDOCFLAGS=-D warnings`.
+- Screen tests assert meter fill by cell colour (filled vs `meter_bg`), because filled and empty cells are
+  both `■`.

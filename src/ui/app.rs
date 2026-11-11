@@ -1239,10 +1239,12 @@ impl App {
                 self.sort_by,
                 self.sort_desc,
             );
-            let visible: Vec<VisibleRow> = visible_all
+            let mut visible: Vec<VisibleRow> = visible_all
                 .into_iter()
                 .filter(|row| self.filter_visible.contains(&row.pid))
                 .collect();
+            // Hidden siblings must not leave dangling `├─` glyphs behind.
+            relabel_last_children(&mut visible);
             self.rows = build_display_rows(&self.tree, &aggregates, &visible, &self.expanded);
         }
         self.cursor = relocate_cursor_to_selected(self.selected_pid, &self.rows, self.cursor);
@@ -1616,6 +1618,21 @@ fn remap_expanded_set(
         }
     }
     mapped
+}
+
+/// Recomputes `is_last_child` among the siblings that are actually present in `rows`
+/// (depth-first order), e.g. after a filter removed later siblings.
+fn relabel_last_children(rows: &mut [VisibleRow]) {
+    let mut seen_at_depth: Vec<bool> = Vec::new();
+    for row in rows.iter_mut().rev() {
+        if seen_at_depth.len() <= row.depth {
+            seen_at_depth.resize(row.depth + 1, false);
+        }
+        // Rows deeper than this one (earlier in order) belong to a different parent's subtree.
+        seen_at_depth.truncate(row.depth + 1);
+        row.is_last_child = !seen_at_depth[row.depth];
+        seen_at_depth[row.depth] = true;
+    }
 }
 
 fn build_display_rows(
@@ -2376,6 +2393,44 @@ mod tests {
         app.option_selected = 16;
         assert_eq!(app.option_scroll_for(5), 12);
         assert_eq!(app.option_scroll_for(100), 0, "everything fits");
+    }
+
+    fn vrow(pid: i32, depth: usize) -> crate::model::VisibleRow {
+        crate::model::VisibleRow {
+            pid,
+            depth,
+            has_children: false,
+            is_last_child: false,
+        }
+    }
+
+    #[test]
+    fn relabel_last_children_follows_the_rows_that_remain() {
+        // 1 ─ 2 ─ 3
+        //   └ 4        (4 is the last child of 1; 3 the only child of 2)
+        // 5
+        let mut rows = vec![vrow(1, 0), vrow(2, 1), vrow(3, 2), vrow(4, 1), vrow(5, 0)];
+        super::relabel_last_children(&mut rows);
+        let flags: Vec<(i32, bool)> = rows.iter().map(|r| (r.pid, r.is_last_child)).collect();
+        assert_eq!(
+            flags,
+            vec![(1, false), (2, false), (3, true), (4, true), (5, true)]
+        );
+
+        // A lone chain: everything is the last child of its parent.
+        let mut chain = vec![vrow(1, 0), vrow(2, 1), vrow(3, 2)];
+        super::relabel_last_children(&mut chain);
+        assert!(chain.iter().all(|r| r.is_last_child));
+        super::relabel_last_children(&mut []);
+    }
+
+    #[test]
+    fn filtering_draws_last_child_glyphs_for_the_visible_siblings() {
+        let mut app = filter_app();
+        app.set_filter("target");
+        let prefixes: Vec<&str> = app.rows().iter().map(|r| r.tree_prefix.as_str()).collect();
+        // launchd -> shell -> target; `other` (a later sibling of shell) is filtered out.
+        assert_eq!(prefixes, vec!["[-] ", "└─ [-] ", "   └─ "]);
     }
 
     fn snapshot_of(pids: &[i32]) -> Snapshot {

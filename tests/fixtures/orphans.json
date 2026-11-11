@@ -1,0 +1,35 @@
+{
+  "description": "Roots: ppid 0, a missing parent (999), and a self-linked process.",
+  "total_mem": 1000000,
+  "used_mem": 400000,
+  "procs": [
+    {
+      "pid": 10,
+      "ppid": 0,
+      "comm": "top",
+      "rss": 1,
+      "vsz": 2
+    },
+    {
+      "pid": 20,
+      "ppid": 999,
+      "comm": "orphan",
+      "rss": 2,
+      "vsz": 4
+    },
+    {
+      "pid": 21,
+      "ppid": 20,
+      "comm": "orphan-child",
+      "rss": 4,
+      "vsz": 8
+    },
+    {
+      "pid": 30,
+      "ppid": 30,
+      "comm": "selfie",
+      "rss": 8,
+      "vsz": 16
+    }
+  ]
+}

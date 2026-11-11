@@ -4,7 +4,9 @@
 
 ```
 src/
-  main.rs            — clap CLI entry:
+  lib.rs             — library crate root: `pub mod collect, config, model, query, ui` (so integration tests
+                       can reach the model); the binary is a thin wrapper
+  main.rs            — clap CLI entry (uses the `pspp` library):
                        - query mode iff PATTERN/--pid/--min/--top/--json/--query given OR stdout non-tty
                          (query mode never reads config; defaults rss/rollup/agg/binary)
                        - else (tty + no query args): load config, run ratatui loop via `ui::run_tui`,
@@ -52,10 +54,20 @@ src/
   config.rs          — config load/save (`$PSPP_CONFIG_DIR/pspp.conf` override else
                        `~/.config/pspp/pspp.conf`), tolerant TOML reader, save_on_exit persistence
 tests/
-  fixtures/          — synthetic process tables (deep chains, fan-out, orphans, pid reuse)
-  model_tests.rs     — aggregation/sorting unit tests
-  query_cli.rs       — stdout/JSON integration tests
+  fixtures/          — JSON process tables: deep_chain, fan_out, orphans, pid_reuse, cycle, duplicate_pid
+                       (`{ description, total_mem, used_mem, procs: [{ pid, ppid, comm, rss, vsz, footprint? }] }`)
+  model_tests.rs     — integration tests: loads fixtures into `Snapshot`s and checks rollup/flat totals,
+                       root sets, cycle/duplicate handling through the public `pspp::model` API
+  query_cli.rs       — runs the real binary: stdout/JSON shape, header mode, config isolation, exit codes
+.github/workflows/
+  ci.yml             — macos-latest + ubuntu-latest: build, test, clippy -D warnings, fmt --check, doc
+                       (RUSTFLAGS/RUSTDOCFLAGS = -D warnings)
 ```
+
+Unit tests live next to the code (`#[cfg(test)]`). The UI is tested without a terminal:
+`App::with_snapshot(Snapshot, UiSettings)` injects a deterministic snapshot (no worker thread), and
+`ui::draw::screens` renders whole screens into a `ratatui::backend::TestBackend` (rollup/flat ×
+filtered/unfiltered × braille/block/tty) over a 4-level synthetic tree.
 
 ## Key data flow
 

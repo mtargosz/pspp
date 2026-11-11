@@ -1,0 +1,35 @@
+{
+  "description": "Pid 100 was reused by an unrelated newer process; pid 200 still names it as parent, and pid 300's parent (555) is gone.",
+  "total_mem": 1000000,
+  "used_mem": 400000,
+  "procs": [
+    {
+      "pid": 1,
+      "ppid": 0,
+      "comm": "init",
+      "rss": 1,
+      "vsz": 2
+    },
+    {
+      "pid": 100,
+      "ppid": 1,
+      "comm": "reused-pid",
+      "rss": 2,
+      "vsz": 4
+    },
+    {
+      "pid": 200,
+      "ppid": 100,
+      "comm": "stale-child",
+      "rss": 4,
+      "vsz": 8
+    },
+    {
+      "pid": 300,
+      "ppid": 555,
+      "comm": "parent-vanished",
+      "rss": 8,
+      "vsz": 16
+    }
+  ]
+}

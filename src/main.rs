@@ -1,19 +1,14 @@
-//! `pspp` ("ps++") — interactive btop-style TUI and scriptable query CLI for
-//! viewing process memory grouped by parent/child (`pid <- ppid`) relationships.
-
-mod collect;
-mod config;
-pub mod model;
-mod query;
-mod ui;
+//! `pspp` command-line entry point: argument parsing and mode selection (TUI vs. one-shot query).
+//! All logic lives in the `pspp` library crate (`src/lib.rs`).
 
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::str::FromStr;
 
 use clap::{Parser, ValueEnum};
-use model::{AggMode, MemKind, SortBy};
-use query::QueryOpts;
+use pspp::model::{AggMode, MemKind, SortBy};
+use pspp::query::QueryOpts;
+use pspp::{collect, config, query, ui};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CliAgg {

@@ -1,0 +1,35 @@
+{
+  "description": "pid 5 appears twice in one snapshot; the first record wins.",
+  "total_mem": 1000000,
+  "used_mem": 400000,
+  "procs": [
+    {
+      "pid": 1,
+      "ppid": 0,
+      "comm": "init",
+      "rss": 1,
+      "vsz": 2
+    },
+    {
+      "pid": 5,
+      "ppid": 1,
+      "comm": "first",
+      "rss": 10,
+      "vsz": 20
+    },
+    {
+      "pid": 5,
+      "ppid": 1,
+      "comm": "second",
+      "rss": 99,
+      "vsz": 198
+    },
+    {
+      "pid": 6,
+      "ppid": 5,
+      "comm": "kid",
+      "rss": 20,
+      "vsz": 40
+    }
+  ]
+}

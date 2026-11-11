@@ -28,7 +28,7 @@
 - [x] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
 - [x] M20 feat(options): btop General parity and global keys
 - [x] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
-- [ ] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
+- [x] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
 - [ ] M23 refactor: single source of truth for enums; docs pass
 
 ## Log
@@ -320,6 +320,15 @@
 - `ProcTree::build(Snapshot)` owns records (`procs()`, `proc_count()`, `max_pid()`, `total_mem()`, `used_mem()`);
   per-tick `ProcRec` clone gone. `Snapshot::taken_at` removed. PID column sized from the largest pid.
 - Removed from deferred notes: tree clone, dead `taken_at`.
+
+### 2026-11-11 — M22 (test: synthetic snapshots, fixtures, TestBackend screens, CI)
+- `App::with_snapshot` (introduced in M18) is the deterministic entry point; `from_settings` delegates to it.
+- `ui::draw::screens`: 7 whole-screen tests over a 4-level synthetic tree (rollup/flat, filtered/unfiltered,
+  braille/block/tty): tree glyphs, Σ values, `~` markers, `%`, meter fill by colour, graph glyph family,
+  mem summary, collapse-while-filtering.
+- `tests/fixtures/*.json` (6 scenarios) + `tests/model_tests.rs` (9 tests) via the new library crate.
+- Fixed while testing: dangling `├─` glyphs in filtered views (`relabel_last_children`).
+- `.github/workflows/ci.yml` added; `architecture.md` test layout corrected (it previously listed files that did not exist).
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
