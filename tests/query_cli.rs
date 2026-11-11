@@ -62,9 +62,10 @@ fn top_limits_plain_rows() {
 #[test]
 fn high_min_reports_no_matches() {
     let output = run(&["--min", "100T"]);
-    assert!(
-        output.status.success(),
-        "expected success, stderr: {}",
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit 1 for no matches, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -88,4 +89,24 @@ fn invalid_mem_lists_available_kinds() {
         stderr.contains("available kinds"),
         "expected helpful mem error with available kinds, got: {stderr}"
     );
+}
+
+#[test]
+fn top_zero_is_rejected_and_unmatched_json_exits_one() {
+    let output = run(&["--top", "0"]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "--top 0 should be a usage error"
+    );
+
+    let output = run(&["--json", "--pid", "2147483647"]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "unmatched --pid should exit 1"
+    );
+    let parsed: Value =
+        serde_json::from_slice(&output.stdout).expect("json should still be emitted");
+    assert_eq!(parsed["rows"].as_array().map(Vec::len), Some(0));
 }

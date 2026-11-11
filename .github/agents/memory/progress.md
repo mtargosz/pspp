@@ -17,7 +17,7 @@
 - [x] 10. menus — Esc overlay, Options (General-style), config persistence
 - [x] 11. help — plain-English memory explanations, filter (f, /)
 - [x] 12. testing-pass — tester agent full pass
-- [ ] 13. review-pass — reviewer agent full pass
+- [x] 13. review-pass — reviewer agent full pass
 - [ ] 14. docs — README, --help, man page
 
 ## Log
@@ -185,10 +185,71 @@
   (+`--json`). Invalid: `--mem bogus` exit 2 (lists kinds), `--mem pss` exit 2 (unavailable on macOS),
   `--min 12X` exit 2, `--top -1` / `--min -1G` exit 2 (clap; needs `--` form). `--top 0` exit 0.
 
+### 2026-11-11 — reviewer (milestone 13)
+- Full review of `src/` + `tests/`. Linux target not installed (`rustup target list --installed` =
+  aarch64-apple-darwin only), so `collect/linux.rs` got a read-only review: stat field indexing after
+  `)`, `Pss:`/`Swap:` prefix matching (skips `Pss_Anon`/`SwapPss`), USS = Private_Clean+Dirty, and cfg
+  gates all look correct.
+- Fixed (blocker): macOS `proc_pid_rusage(RUSAGE_INFO_V2)` wrote the 160-byte v2 struct into a
+  hand-rolled 96-byte (v0-layout) buffer, a stack overflow (UB). Now uses `libc::rusage_info_v2` /
+  `libc::proc_pid_rusage`. Also: `pid_to_i32` no longer allocates (`try_from(as_u32)`), and the
+  snapshot refreshes only memory + process memory instead of `new_all()` + `refresh_all()` (double
+  full refresh incl. CPU). Live check: 726 procs, footprint populated, root count same as before (224 vs 227, live churn).
+- Fixed (blocker): `update_ms` had no upper bound (config i64, CLI u64, editor digits, →), so
+  `Instant + Duration` could panic. Clamped to `100..=86_400_000` (btop max) in app and config load,
+  `checked_add` in `next_tick_deadline`, editor capped at 8 digits.
+- Fixed (should-fix): query `TOTAL` double counted nested rollup rows (e.g. launchd + its children).
+  Now each process is counted once (see decisions.md). `run_query` returns `QueryResult { output,
+  row_count }`, so `main` no longer rebuilds the tree via the removed `count_matches`.
+- Fixed (should-fix): Ctrl-C did not quit while a filter was active (the `c` clear-filter arm matched
+  first) or in FilterInput/Menu/Options/Help (raw mode swallows SIGINT). Ctrl-C/Ctrl-Q now quit from
+  every mode.
+- Fixed (should-fix): `pspp | head` reported "failed to write stdout" and exit 1 on EPIPE; now success.
+- Fixed (should-fix): config save truncated the file before writing; now write `.tmp` and rename.
+- Fixed (should-fix): menu overlay panicked at small terminal sizes (e.g. 10x3, index outside buffer)
+  because buttons were laid out in the unbordered overlay rect and not clipped. Now uses the bordered
+  inner rect and clips buttons (`Rect::intersection`). Found by the new all-modes tiny-size render test.
+- Fixed (nit): status line total colour summed `own` over visible rows only, so collapsing a node
+  changed it; now uses `App::mem_total_used()`.
+- btop fidelity: menu also closes on `q`, navigates with Tab/BackTab, activates with Space (help text
+  updated).
+- Dead code: removed the `#![allow(dead_code)]` in `ui/graph.rs` and `ui/theme.rs`; deleted unused
+  `Theme::{graph_text, gradient_*, graph_gradient, is_truecolor, graph_rgb, graph_color}`,
+  `Rgb::from_hex`, `GraphSymbols::{parse, label}`, `quantize`; `History::{is_empty, iter}` are
+  `#[cfg(test)]`.
+- Perf: Comm sort lowercases each name once (`sort_by_cached_key`) instead of twice per comparison.
+- Decided the tester's 3 open questions (see decisions.md): `--top 0` rejected (exit 2); no matches
+  exits 1; TOTAL is a deduplicated sum.
+- Tests added: `update_ms_is_clamped_so_deadline_cannot_overflow`, `ctrl_c_quits_from_every_mode`,
+  `menu_closes_on_q_without_quitting` (app); `update_ms_is_clamped_and_save_leaves_no_temp_file`
+  (config); `run_query_total_counts_each_process_once` (query);
+  `every_mode_renders_at_tiny_sizes_without_panicking` (draw);
+  `comm_sort_is_case_insensitive_with_pid_tiebreak_in_both_directions` (tree);
+  `top_zero_is_rejected_and_unmatched_json_exits_one` (integration). `high_min_reports_no_matches`
+  now expects exit 1.
+- Dependency audit: all 9 deps used (clap, crossterm, ratatui, sysinfo, libc, dirs, serde, serde_json,
+  toml). Nothing removed.
+- Suite: `cargo test` 68 unit + 5 integration green; `cargo clippy --all-targets -D warnings` and
+  `cargo fmt --check` clean.
+
 ## Known issues
-- Design question (not changed): `--top 0` prints zero rows (exit 0, "no matches" on stderr); it may
-  be intended as "no limit". Decide and document in the CLI help.
-- Design question (not changed): unmatched `--pid` or pattern exits 0 with "no matches"; a
-  grep-style exit 1 for no matches may be preferable for scripting.
-- `TOTAL` semantics: `total` in JSON and the plain TOTAL row sum only the rows that are returned
-  (after filter and `--top`). Spec does not state whether TOTAL should cover all matches. Confirm.
+- Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
+- macOS: without root, `proc_pidinfo(PROC_PIDTBSDINFO)` fails for other users' processes, so sysinfo
+  reports no parent and they become roots (~220 on a typical desktop). Pre-existing; only fixable with
+  elevated privileges or a different ppid source (e.g. `sysctl KERN_PROC_PID`, which works unprivileged).
+  Worth a follow-up: it distorts the rollup tree when not running as root.
+
+## Review notes (deferred, 2026-11-11 reviewer)
+- `ProcTree::build` clones every `ProcRec` while `App` also keeps the snapshot (≈2× process memory per
+  tick). Could borrow or move the snapshot into the tree.
+- Filter mode ignores the expanded set, so Space/Enter toggles state with no visible effect until the
+  filter is cleared.
+- Esc in filter input clears the filter (btop restores the previous one). Documented as intended.
+- `--update-ms` from the CLI is persisted by `save_on_exit` (btop does not persist CLI overrides).
+- Config save rewrites the file: user comments and unknown keys are dropped.
+- Menu is a simplified btop menu (no ASCII-art banner, no 80x24 minimum-size message).
+- No mouse handling in the Options/Help overlays.
+- Double-click detection is keyed by row index, which can shift if a tick lands between clicks.
+- `ProcTree::sorted_pids` (Comm arm case-sensitive) is only used by tests; `pub mod model` in
+  `main.rs` keeps it from being flagged as dead. Consider removing or aligning with the UI sort.
+- Query mode would print duplicate rows if a snapshot ever contained duplicate pids (theoretical).

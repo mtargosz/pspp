@@ -1,8 +1,5 @@
 //! btop-style history graphs (braille / block / tty) and `■` meters.
 
-// Block/tty selection and parsing are consumed by the options menu (milestone 10).
-#![allow(dead_code)]
-
 use std::collections::VecDeque;
 
 use ratatui::style::Style;
@@ -66,15 +63,13 @@ impl History {
         self.pushed = 0;
     }
 
-    pub fn len(&self) -> usize {
-        self.samples.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
         self.samples.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = u64> + '_ {
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = u64> + '_ {
         self.samples.iter().copied()
     }
 
@@ -116,23 +111,6 @@ impl GraphSymbols {
         Self::from_term(std::env::var("TERM").ok().as_deref())
     }
 
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "braille" => Some(Self::Braille),
-            "block" => Some(Self::Block),
-            "tty" => Some(Self::Tty),
-            _ => None,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Braille => "braille",
-            Self::Block => "block",
-            Self::Tty => "tty",
-        }
-    }
-
     /// Samples shown per terminal cell.
     fn samples_per_cell(self) -> usize {
         match self {
@@ -168,11 +146,6 @@ pub fn row_level(value: u64, max: u64, row: usize, height: usize) -> usize {
     ((cur - low) * 4.0 / (high - low) + modifier)
         .round()
         .clamp(0.0, 4.0) as usize
-}
-
-/// Single-row quantization of `value` against `max` into 0..=4.
-pub fn quantize(value: u64, max: u64) -> usize {
-    row_level(value, max, 0, 1)
 }
 
 /// `(left, right)` samples for each of the `cells` columns, oldest first, newest at the right edge.
@@ -311,11 +284,11 @@ mod tests {
 
     #[test]
     fn quantization_edges() {
-        assert_eq!(quantize(0, 100), 0);
-        assert_eq!(quantize(100, 100), 4);
-        assert_eq!(quantize(1_000, 100), 4);
-        assert_eq!(quantize(50, 100), 2);
-        assert_eq!(quantize(10, 0), 0);
+        assert_eq!(row_level(0, 100, 0, 1), 0);
+        assert_eq!(row_level(100, 100, 0, 1), 4);
+        assert_eq!(row_level(1_000, 100, 0, 1), 4);
+        assert_eq!(row_level(50, 100, 0, 1), 2);
+        assert_eq!(row_level(10, 0, 0, 1), 0);
     }
 
     #[test]
@@ -411,8 +384,6 @@ mod tests {
             GraphSymbols::Braille
         );
         assert_eq!(GraphSymbols::from_term(None), GraphSymbols::Braille);
-        assert_eq!(GraphSymbols::parse("Block"), Some(GraphSymbols::Block));
-        assert_eq!(GraphSymbols::parse("nope"), None);
     }
 
     #[test]

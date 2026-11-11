@@ -1,42 +1,18 @@
 use std::{mem::MaybeUninit, time::Instant};
 
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::collect::{MemSet, ProcRec, Snapshot};
 
-const RUSAGE_INFO_V2: libc::c_int = 2;
-
-#[repr(C)]
-struct RusageInfoV2 {
-    ri_uuid: [u8; 16],
-    ri_user_time: u64,
-    ri_system_time: u64,
-    ri_pkg_idle_wkups: u64,
-    ri_interrupt_wkups: u64,
-    ri_pageins: u64,
-    ri_wired_size: u64,
-    ri_resident_size: u64,
-    ri_phys_footprint: u64,
-    ri_proc_start_abstime: u64,
-    ri_proc_exit_abstime: u64,
-}
-
-#[link(name = "proc")]
-unsafe extern "C" {
-    fn proc_pid_rusage(
-        pid: libc::c_int,
-        flavor: libc::c_int,
-        buffer: *mut libc::c_void,
-    ) -> libc::c_int;
-}
-
 fn pid_to_i32(pid: Pid) -> i32 {
-    pid.to_string().parse::<i32>().unwrap_or_default()
+    i32::try_from(pid.as_u32()).unwrap_or_default()
 }
 
 fn read_phys_footprint(pid: i32) -> Option<u64> {
-    let mut usage = MaybeUninit::<RusageInfoV2>::zeroed();
-    let result = unsafe { proc_pid_rusage(pid, RUSAGE_INFO_V2, usage.as_mut_ptr().cast()) };
+    // The kernel writes a full `rusage_info_v2`, so the buffer must use libc's complete layout.
+    let mut usage = MaybeUninit::<libc::rusage_info_v2>::zeroed();
+    let result =
+        unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, usage.as_mut_ptr().cast()) };
     if result != 0 {
         return None;
     }
@@ -46,8 +22,13 @@ fn read_phys_footprint(pid: i32) -> Option<u64> {
 }
 
 pub(crate) fn take_snapshot() -> Snapshot {
-    let mut system = System::new_all();
-    system.refresh_all();
+    let mut system = System::new();
+    system.refresh_memory();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_memory(),
+    );
 
     let mut procs = Vec::with_capacity(system.processes().len());
     for (pid, process) in system.processes() {

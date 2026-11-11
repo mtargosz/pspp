@@ -15,6 +15,8 @@ use crate::ui::theme::Theme;
 
 pub const DEFAULT_UPDATE_MS: u64 = 2_000;
 pub const MIN_UPDATE_MS: u64 = 100;
+/// btop's upper bound (24h); also keeps `Instant + Duration` from overflowing.
+pub const MAX_UPDATE_MS: u64 = 86_400_000;
 
 const MOUSE_SCROLL_STEP: isize = 3;
 const DOUBLE_CLICK_MS: u64 = 350;
@@ -32,11 +34,12 @@ const OPTION_KEYS: [OptionKey; 8] = [
 ];
 
 pub fn clamp_update_ms(update_ms: u64) -> u64 {
-    update_ms.max(MIN_UPDATE_MS)
+    update_ms.clamp(MIN_UPDATE_MS, MAX_UPDATE_MS)
 }
 
 pub fn next_tick_deadline(last_tick_at: Instant, update_ms: u64) -> Instant {
-    last_tick_at + Duration::from_millis(clamp_update_ms(update_ms))
+    let interval = Duration::from_millis(clamp_update_ms(update_ms));
+    last_tick_at.checked_add(interval).unwrap_or(last_tick_at)
 }
 
 pub fn remaining_until_tick(now: Instant, next_tick_at: Instant) -> Duration {
@@ -488,6 +491,13 @@ impl App {
         if key_event.kind != KeyEventKind::Press {
             return;
         }
+        // Raw mode swallows SIGINT, so Ctrl-C/Ctrl-Q must quit from every mode.
+        if key_event.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key_event.code, KeyCode::Char('c' | 'C' | 'q' | 'Q'))
+        {
+            self.should_quit = true;
+            return;
+        }
 
         match self.mode {
             AppMode::Normal => self.on_key_normal(key_event),
@@ -625,10 +635,10 @@ impl App {
 
     fn on_key_menu(&mut self, key_event: KeyEvent) {
         match key_event.code {
-            KeyCode::Esc => self.mode = AppMode::Normal,
-            KeyCode::Up | KeyCode::Char('k') => self.move_menu_selection(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_menu_selection(1),
-            KeyCode::Enter => self.activate_menu_button(self.menu_selected),
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.mode = AppMode::Normal,
+            KeyCode::Up | KeyCode::BackTab | KeyCode::Char('k') => self.move_menu_selection(-1),
+            KeyCode::Down | KeyCode::Tab | KeyCode::Char('j') => self.move_menu_selection(1),
+            KeyCode::Enter | KeyCode::Char(' ') => self.activate_menu_button(self.menu_selected),
             _ => {}
         }
     }
@@ -672,7 +682,7 @@ impl App {
             KeyCode::Backspace => {
                 editor.pop();
             }
-            KeyCode::Char(ch) if ch.is_ascii_digit() => {
+            KeyCode::Char(ch) if ch.is_ascii_digit() && editor.len() < 8 => {
                 editor.push(ch);
             }
             _ => {}
@@ -1274,11 +1284,14 @@ fn is_quit_key(ch: char, modifiers: KeyModifiers) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_tree_prefix, clamp_cursor_scroll, cycle_index, cycle_mem_kind_value,
-        cycle_sort_key_value, relocate_cursor_to_selected, DisplayRow, GraphSymbolSetting,
+        build_tree_prefix, clamp_cursor_scroll, clamp_update_ms, cycle_index, cycle_mem_kind_value,
+        cycle_sort_key_value, next_tick_deadline, relocate_cursor_to_selected, App, AppMode,
+        DisplayRow, GraphSymbolSetting, MAX_UPDATE_MS, MIN_UPDATE_MS,
     };
     use crate::model::{MemKind, SortBy};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::ops::Range;
+    use std::time::{Duration, Instant};
 
     fn row(pid: i32) -> DisplayRow {
         DisplayRow {
@@ -1370,5 +1383,41 @@ mod tests {
             GraphSymbolSetting::from_config("unknown"),
             GraphSymbolSetting::Auto
         );
+    }
+
+    #[test]
+    fn update_ms_is_clamped_so_deadline_cannot_overflow() {
+        assert_eq!(clamp_update_ms(0), MIN_UPDATE_MS);
+        assert_eq!(clamp_update_ms(u64::MAX), MAX_UPDATE_MS);
+        let now = Instant::now();
+        assert_eq!(
+            next_tick_deadline(now, u64::MAX),
+            now + Duration::from_millis(MAX_UPDATE_MS)
+        );
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_every_mode() {
+        for mode in [
+            AppMode::Normal,
+            AppMode::FilterInput,
+            AppMode::Menu,
+            AppMode::Options,
+            AppMode::Help,
+        ] {
+            let mut app = App::new(1_000);
+            app.mode = mode;
+            app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+            assert!(app.should_quit, "Ctrl-C ignored in {mode:?}");
+        }
+    }
+
+    #[test]
+    fn menu_closes_on_q_without_quitting() {
+        let mut app = App::new(1_000);
+        app.mode = AppMode::Menu;
+        app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(!app.should_quit);
     }
 }

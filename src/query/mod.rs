@@ -67,20 +67,30 @@ struct JsonRow {
     approximate: bool,
 }
 
-pub fn run_query(snapshot: &Snapshot, opts: &QueryOpts) -> String {
-    let rows = matching_rows(snapshot, opts);
-    if opts.json {
-        render_json(rows)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Total {
+    bytes: u64,
+    approximate: bool,
+}
+
+#[derive(Debug)]
+pub struct QueryResult {
+    pub output: String,
+    pub row_count: usize,
+}
+
+pub fn run_query(snapshot: &Snapshot, opts: &QueryOpts) -> QueryResult {
+    let (rows, total) = matching_rows(snapshot, opts);
+    let row_count = rows.len();
+    let output = if opts.json {
+        render_json(rows, total)
     } else {
-        render_plain(&rows, opts)
-    }
+        render_plain(&rows, total, opts)
+    };
+    QueryResult { output, row_count }
 }
 
-pub fn count_matches(snapshot: &Snapshot, opts: &QueryOpts) -> usize {
-    matching_rows(snapshot, opts).len()
-}
-
-fn matching_rows(snapshot: &Snapshot, opts: &QueryOpts) -> Vec<RenderRow> {
+fn matching_rows(snapshot: &Snapshot, opts: &QueryOpts) -> (Vec<RenderRow>, Total) {
     let tree = ProcTree::build(snapshot);
     let aggregates = tree.aggregate(opts.mem_kind, opts.agg_mode);
     let by_pid: HashMap<i32, &ProcRec> = snapshot
@@ -126,7 +136,34 @@ fn matching_rows(snapshot: &Snapshot, opts: &QueryOpts) -> Vec<RenderRow> {
     if let Some(top) = opts.top {
         rows.truncate(top);
     }
-    rows
+    let total = distinct_total(&tree, &rows, opts.agg_mode);
+    (rows, total)
+}
+
+/// Sums the returned rows without counting any process twice.
+///
+/// Rollup rows nest (an ancestor's Σ already contains its descendants), so only rows with no
+/// returned ancestor contribute. Flat Σ covers direct children only, and each process has one
+/// parent, so flat rows are already disjoint.
+fn distinct_total(tree: &ProcTree, rows: &[RenderRow], agg_mode: AggMode) -> Total {
+    let returned: HashSet<i32> = rows.iter().map(|row| row.pid).collect();
+    let has_returned_ancestor = |pid: i32| {
+        let mut current = tree.parent_pid(pid);
+        while let Some(parent) = current {
+            if returned.contains(&parent) {
+                return true;
+            }
+            current = tree.parent_pid(parent);
+        }
+        false
+    };
+
+    rows.iter()
+        .filter(|row| agg_mode == AggMode::Flat || !has_returned_ancestor(row.pid))
+        .fold(Total::default(), |acc, row| Total {
+            bytes: acc.bytes.saturating_add(row.agg),
+            approximate: acc.approximate || row.approximate,
+        })
 }
 
 fn allowed_pid_set(snapshot: &Snapshot, pid: Option<i32>) -> HashSet<i32> {
@@ -194,7 +231,7 @@ fn compare_rows(left: &RenderRow, right: &RenderRow, sort_by: SortBy) -> Orderin
     }
 }
 
-fn render_plain(rows: &[RenderRow], opts: &QueryOpts) -> String {
+fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts) -> String {
     let agg_header = format!("{} Σ", opts.mem_kind.label());
     let header = [
         "PID",
@@ -235,12 +272,8 @@ fn render_plain(rows: &[RenderRow], opts: &QueryOpts) -> String {
         })
         .collect();
 
-    let total = rows
-        .iter()
-        .fold(0_u64, |acc, row| acc.saturating_add(row.agg));
-    let total_approximate = rows.iter().any(|row| row.approximate);
-    let mut total_formatted = format_size(total, opts.base10);
-    if total_approximate {
+    let mut total_formatted = format_size(total.bytes, opts.base10);
+    if total.approximate {
         total_formatted.push('~');
     }
     let total_row = [
@@ -325,11 +358,7 @@ fn render_plain(rows: &[RenderRow], opts: &QueryOpts) -> String {
     lines.join("\n")
 }
 
-fn render_json(rows: Vec<RenderRow>) -> String {
-    let total = rows
-        .iter()
-        .fold(0_u64, |acc, row| acc.saturating_add(row.agg));
-
+fn render_json(rows: Vec<RenderRow>, total: Total) -> String {
     let payload = JsonOutput {
         rows: rows
             .into_iter()
@@ -344,7 +373,7 @@ fn render_json(rows: Vec<RenderRow>) -> String {
                 approximate: row.approximate,
             })
             .collect(),
-        total,
+        total: total.bytes,
     };
 
     match serde_json::to_string_pretty(&payload) {
@@ -502,7 +531,7 @@ mod tests {
             ..QueryOpts::default()
         };
 
-        let rendered = run_query(&snap, &opts);
+        let rendered = run_query(&snap, &opts).output;
         let parsed: Value = serde_json::from_str(&rendered).expect("query json should parse");
         let rows = parsed["rows"].as_array().expect("rows should be array");
         let total = parsed["total"].as_u64().expect("total should be u64");
@@ -531,7 +560,7 @@ mod tests {
             base10: false,
         };
 
-        let rendered = run_query(&snap, &opts);
+        let rendered = run_query(&snap, &opts).output;
         assert!(rendered.contains("worker-alpha"));
         assert!(rendered.contains("worker-beta"));
         assert!(!rendered.contains("other"));
@@ -548,7 +577,7 @@ mod tests {
             pattern: Some("café".to_owned()),
             ..QueryOpts::default()
         };
-        let rendered = run_query(&snap, &accent_lower);
+        let rendered = run_query(&snap, &accent_lower).output;
         assert!(rendered.contains("CAFÉ-worker"));
         assert!(!rendered.contains("école-daemon"));
 
@@ -556,7 +585,7 @@ mod tests {
             pattern: Some("ÉCOLE".to_owned()),
             ..QueryOpts::default()
         };
-        let rendered = run_query(&snap, &accent_upper);
+        let rendered = run_query(&snap, &accent_upper).output;
         assert!(rendered.contains("école-daemon"));
         assert!(!rendered.contains("CAFÉ-worker"));
     }
@@ -568,14 +597,15 @@ mod tests {
             ..QueryOpts::default()
         };
 
-        let empty: Value = serde_json::from_str(&run_query(&snapshot(Vec::new()), &json))
+        let empty: Value = serde_json::from_str(&run_query(&snapshot(Vec::new()), &json).output)
             .expect("empty query json should parse");
         assert_eq!(empty["rows"].as_array().map(Vec::len), Some(0));
         assert_eq!(empty["total"].as_u64(), Some(0));
 
-        let single: Value =
-            serde_json::from_str(&run_query(&snapshot(vec![proc(1, 0, "init", 500)]), &json))
-                .expect("single query json should parse");
+        let single: Value = serde_json::from_str(
+            &run_query(&snapshot(vec![proc(1, 0, "init", 500)]), &json).output,
+        )
+        .expect("single query json should parse");
         let rows = single["rows"].as_array().expect("rows should be array");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["children"].as_u64(), Some(0));
@@ -596,8 +626,8 @@ mod tests {
             ..QueryOpts::default()
         };
 
-        let parsed: Value =
-            serde_json::from_str(&run_query(&snap, &opts)).expect("cycle query json should parse");
+        let parsed: Value = serde_json::from_str(&run_query(&snap, &opts).output)
+            .expect("cycle query json should parse");
         let pids: Vec<i64> = parsed["rows"]
             .as_array()
             .expect("rows should be array")
@@ -619,7 +649,7 @@ mod tests {
         };
 
         let parsed: Value =
-            serde_json::from_str(&run_query(&snap, &opts)).expect("json should parse");
+            serde_json::from_str(&run_query(&snap, &opts).output).expect("json should parse");
         assert_eq!(parsed["rows"].as_array().map(Vec::len), Some(0));
         assert_eq!(parsed["total"].as_u64(), Some(0));
     }
@@ -636,8 +666,37 @@ mod tests {
         };
 
         let parsed: Value =
-            serde_json::from_str(&run_query(&snap, &opts)).expect("json should parse");
+            serde_json::from_str(&run_query(&snap, &opts).output).expect("json should parse");
         assert_eq!(parsed["total"].as_u64(), Some(u64::MAX));
+    }
+
+    #[test]
+    fn run_query_total_counts_each_process_once() {
+        let snap = snapshot(vec![
+            proc(1, 0, "launchd", 100),
+            proc(2, 1, "shell", 10),
+            proc(3, 2, "cargo", 1),
+            proc(4, 0, "other", 1_000),
+        ]);
+        let total_for = |agg_mode, pattern: Option<&str>| {
+            let opts = QueryOpts {
+                json: true,
+                agg_mode,
+                pattern: pattern.map(str::to_owned),
+                ..QueryOpts::default()
+            };
+            let result = run_query(&snap, &opts);
+            let parsed: Value = serde_json::from_str(&result.output).expect("json should parse");
+            (result.row_count, parsed["total"].as_u64())
+        };
+
+        // Rollup rows nest: launchd's Σ (111) already covers shell and cargo.
+        assert_eq!(total_for(AggMode::Rollup, None), (4, Some(1_111)));
+        // Without the ancestor in the result, nested rows count on their own.
+        assert_eq!(total_for(AggMode::Rollup, Some("cargo")), (1, Some(1)));
+        assert_eq!(total_for(AggMode::Rollup, Some("l")), (2, Some(111)));
+        // Flat Σ is direct children only, which never overlap across rows.
+        assert_eq!(total_for(AggMode::Flat, None), (4, Some(11)));
     }
 
     #[test]

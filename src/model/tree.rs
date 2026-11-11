@@ -535,6 +535,17 @@ impl ProcTree {
         descending: bool,
     ) -> Vec<i32> {
         let mut sorted = pids.to_vec();
+        if sort_by == SortBy::Comm {
+            // Lowercase each name once instead of twice per comparison.
+            sorted.sort_by_cached_key(|pid| {
+                let comm = self.nodes.get(pid).map(|node| node.rec.comm.to_lowercase());
+                (comm.unwrap_or_default(), *pid)
+            });
+            if descending {
+                sorted.reverse();
+            }
+            return sorted;
+        }
         sorted.sort_by(|a, b| self.compare_pid_for_sort(*a, *b, rows, sort_by, descending));
         sorted
     }
@@ -814,5 +825,24 @@ mod tests {
         assert_eq!((row.own, row.aggregated, row.descendant_count), (42, 42, 0));
         let flat = tree.flat(MemKind::Rss);
         assert_eq!(flat.get(&1).map(|row| row.aggregated), Some(0));
+    }
+
+    #[test]
+    fn comm_sort_is_case_insensitive_with_pid_tiebreak_in_both_directions() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(5, 0, "beta", 1),
+            proc(3, 0, "Alpha", 1),
+            proc(4, 0, "alpha", 1),
+            proc(1, 0, "Gamma", 1),
+        ]));
+        let rows = tree.aggregate(MemKind::Rss, AggMode::Rollup);
+        let order = |descending| -> Vec<i32> {
+            tree.flatten_visible_sorted(&HashSet::new(), &rows, SortBy::Comm, descending)
+                .iter()
+                .map(|row| row.pid)
+                .collect()
+        };
+        assert_eq!(order(false), vec![3, 4, 5, 1]);
+        assert_eq!(order(true), vec![1, 5, 4, 3]);
     }
 }

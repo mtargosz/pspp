@@ -31,3 +31,21 @@ Per-agent models set in profile frontmatter:
 | reviewer | claude-opus-5.5 | deepest scrutiny; different family from coder to catch family-blind-spot bugs |
 | documentator | gemini-4-carbon | strong prose at low cost |
 | ui-stylist | claude-sonnet-5.5 | detail-oriented visual/code fidelity work |
+
+## 2026-11-11 — reviewer (milestone 13)
+
+- **`--top 0` is a usage error** (clap validation, exit 2: "must be at least 1"). Zero rows is never
+  useful, and silently treating 0 as "no limit" would be surprising; omit `--top` for no limit.
+- **Query exit status is grep/pgrep-style**: 0 = at least one row printed, 1 = no matching rows
+  (plain mode also prints `no matches` to stderr; JSON still prints `{"rows":[],"total":0}`),
+  2 = usage error (clap) or runtime error (e.g. stdout write failure). A broken pipe on stdout
+  (`pspp | head`) is treated as success. Lets scripts write `if pspp --pid 123 >/dev/null; then`.
+- **TOTAL covers the returned rows (after filters and `--top`), with each process counted once.**
+  Rollup Σ values nest, so only returned rows without a returned ancestor contribute; flat Σ values
+  (direct children) are disjoint and are all summed. Saturating. Documented in `--help`.
+- **`update_ms` range is 100..=86_400_000 ms** (btop's limits) in the TUI, options editor, and config
+  load; prevents `Instant + Duration` overflow panics.
+- **Ctrl-C / Ctrl-Q quit from every TUI mode** (raw mode means no SIGINT), taking precedence over
+  filter-clear `c`.
+- **Config is saved atomically** (write `pspp.conf.tmp`, rename).
+

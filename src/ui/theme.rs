@@ -1,8 +1,5 @@
 //! btop "Default" theme colors, 101-step gradients and the 256-color fallback.
 
-// Full theme API lands ahead of its consumers (table/graph/menu milestones).
-#![allow(dead_code)]
-
 use ratatui::style::Color;
 
 pub const GRADIENT_STEPS: usize = 101;
@@ -11,21 +8,6 @@ pub const GRADIENT_STEPS: usize = 101;
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
-    /// Parses `#rrggbb`, `rrggbb`, or btop-style grey shorthand `#xx`.
-    pub fn from_hex(hex: &str) -> Option<Self> {
-        let digits = hex.strip_prefix('#').unwrap_or(hex);
-        let byte = |s: &str| u8::from_str_radix(s, 16).ok();
-        match digits.len() {
-            2 => byte(digits).map(|v| Self(v, v, v)),
-            6 if digits.is_ascii() => Some(Self(
-                byte(&digits[0..2])?,
-                byte(&digits[2..4])?,
-                byte(&digits[4..6])?,
-            )),
-            _ => None,
-        }
-    }
-
     pub const fn grey(value: u8) -> Self {
         Self(value, value, value)
     }
@@ -91,14 +73,9 @@ pub struct Theme {
     pub selected_fg: Rgb,
     pub inactive_fg: Rgb,
     pub meter_bg: Rgb,
-    pub graph_text: Rgb,
     pub div_line: Rgb,
-    pub gradient_start: Rgb,
-    pub gradient_mid: Rgb,
-    pub gradient_end: Rgb,
     truecolor: bool,
     usage_gradient: [Rgb; GRADIENT_STEPS],
-    graph_gradient: [Rgb; GRADIENT_STEPS],
 }
 
 impl Theme {
@@ -113,7 +90,7 @@ impl Theme {
         let start = Rgb(0x77, 0xca, 0x9b);
         let mid = Rgb(0xcb, 0xc0, 0x6c);
         let end = Rgb(0xdc, 0x4c, 0x4c);
-        let gradient = build_gradient(start, mid, end);
+        let usage_gradient = build_gradient(start, mid, end);
         Self {
             main_bg: None,
             main_fg: Rgb::grey(0xcc),
@@ -123,19 +100,10 @@ impl Theme {
             selected_fg: Rgb::grey(0xee),
             inactive_fg: Rgb::grey(0x40),
             meter_bg: Rgb::grey(0x40),
-            graph_text: Rgb::grey(0x60),
             div_line: Rgb::grey(0x30),
-            gradient_start: start,
-            gradient_mid: mid,
-            gradient_end: end,
             truecolor,
-            usage_gradient: gradient,
-            graph_gradient: gradient,
+            usage_gradient,
         }
-    }
-
-    pub fn is_truecolor(&self) -> bool {
-        self.truecolor
     }
 
     /// Applies the truecolor / 256-color policy chosen at construction.
@@ -154,14 +122,6 @@ impl Theme {
     pub fn usage_color(&self, pct: u8) -> Color {
         self.color(self.usage_rgb(pct))
     }
-
-    pub fn graph_rgb(&self, pct: u8) -> Rgb {
-        self.graph_gradient[usize::from(pct.min(100))]
-    }
-
-    pub fn graph_color(&self, pct: u8) -> Color {
-        self.color(self.graph_rgb(pct))
-    }
 }
 
 impl Default for Theme {
@@ -175,21 +135,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hex_parsing() {
-        assert_eq!(Rgb::from_hex("#77ca9b"), Some(Rgb(0x77, 0xca, 0x9b)));
-        assert_eq!(Rgb::from_hex("cc"), Some(Rgb::grey(0xcc)));
-        assert_eq!(Rgb::from_hex("#zz0000"), None);
-        assert_eq!(Rgb::from_hex("#123"), None);
-    }
-
-    #[test]
     fn gradient_has_101_anchored_entries() {
         let theme = Theme::new(true);
         assert_eq!(theme.usage_gradient.len(), 101);
         assert_eq!(theme.usage_rgb(0), Rgb(0x77, 0xca, 0x9b));
         assert_eq!(theme.usage_rgb(50), Rgb(0xcb, 0xc0, 0x6c));
         assert_eq!(theme.usage_rgb(100), Rgb(0xdc, 0x4c, 0x4c));
-        assert_eq!(theme.graph_rgb(100), Rgb(0xdc, 0x4c, 0x4c));
     }
 
     #[test]

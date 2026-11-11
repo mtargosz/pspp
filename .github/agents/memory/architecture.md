@@ -86,22 +86,26 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - `pattern` (case-insensitive substring on `comm`; `!` regex mode intentionally unsupported for now)
   - `pid` subtree filter
   - `mem_kind`, `agg_mode`, `min_bytes`, `sort_by`, `top`, `json`, `base10`
-- `query::run_query(&Snapshot, &QueryOpts) -> String`
+- `query::run_query(&Snapshot, &QueryOpts) -> QueryResult { output: String, row_count: usize }`
   - plain table columns: `PID`, `PARENT`, `COMM`, `OWN`, `<MEM> Σ`, `CHILDREN` + final `TOTAL`
+  - `TOTAL`/`total` counts each covered process once: rollup sums only returned rows with no returned
+    ancestor; flat rows (direct children) are disjoint so all are summed. Saturating.
+  - `main` exit status: 0 rows printed, 1 no matches (plain also prints `no matches` to stderr),
+    2 usage/runtime error; EPIPE on stdout is success. `--top` must be ≥ 1.
   - JSON object: `{ rows: [{ pid, ppid, comm, own, agg, children, descendants, approximate }], total }`
 - `query::{parse_size, format_size}`
   - parse `512K`, `100M`, `1.5G`, bytes; format binary (`KiB`) or decimal (`KB`) units
 
 ## `ui::theme` public API (milestone 7)
 
-- `Rgb(u8,u8,u8)`: `from_hex("#rrggbb"|"#xx")`, `grey(v)`.
+- `Rgb(u8,u8,u8)`: `grey(v)`.
 - `build_gradient(start, mid, end) -> [Rgb; 101]` — two 50-step linear passes, index = percent.
 - `truecolor_from_env(Option<&str>)` — `COLORTERM` = `truecolor`|`24bit`.
 - `Theme::{detect(), new(truecolor: bool)}` (the latter for tests/overrides); `App.theme` holds it.
   - Fields: `main_bg: Option<Rgb>` (None = transparent), `main_fg`, `title`, `hi_fg`, `selected_bg`,
-    `selected_fg`, `inactive_fg`, `meter_bg`, `graph_text`, `div_line`, `gradient_{start,mid,end}`.
+    `selected_fg`, `inactive_fg`, `meter_bg`, `div_line`.
   - `color(Rgb) -> Color` (truecolor `Color::Rgb`, else `Color::Indexed` via grey ramp / 6×6×6 cube).
-  - `usage_rgb/usage_color(pct)` and `graph_rgb/graph_color(pct)` (pct clamped to 100).
+  - `usage_rgb/usage_color(pct)` (pct clamped to 100); the graph uses the same gradient (btop default).
 
 ## Tree table UI (milestone 8)
 
@@ -129,7 +133,7 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - Block/tty: 1 sample/cell (`BLOCK_UP` diagonal, `TTY_UP` = ` ░░▒█`).
   - Row color = usage gradient at the row band's top pct (btop); height 1 colors each cell by its max sample.
   - Scale `max` = system total memory (`App::mem_graph_max`); values clamp.
-- `GraphSymbols::{detect(), from_term, parse, label}`; `App.graph_symbol` stores the user choice
+- `GraphSymbols::{detect(), from_term}`; `App.graph_symbol` stores the user choice
   (`auto|braille|block|tty`) and resolves to a concrete renderer at draw time.
 - `graph::meter_spans(theme, width, value, scale)`: per-cell gradient `■` filled part + `meter_bg` rest.
 - Layout: status line, then rounded " mem " box (6 rows: 3 graph + 1 summary line, hidden when the inner
@@ -139,20 +143,24 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 
 - App mode enum: `AppMode::{Normal, Menu, Options, Help}`.
   - `Esc` toggles menu from Normal.
-  - Menu keys: `↑/↓/j/k`, `Enter`, `Esc`; mouse click on button activates, click outside closes.
+  - Menu keys: `↑/↓/j/k/Tab/BackTab`, `Enter/Space`, `Esc/q`; mouse click on button activates, click
+    outside closes. Buttons are clipped to the bordered inner area on tiny terminals.
+  - `Ctrl-C`/`Ctrl-Q` quit from every mode (checked in `App::on_key` before mode dispatch).
 - Menu buttons (centered overlay): `Options`, `Help`, `Quit`.
   - Selected button uses double-line border + `hi_fg`; unselected uses single-line + `main_fg`.
 - Options overlay:
   - Settings list: `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`,
     `save_on_exit`, `sort_key`, `sort_reverse`.
-  - `update_ms`: Enter-to-edit digit buffer (`Enter` commit, `Esc` cancel), or `←/→` ±100.
+  - `update_ms`: Enter-to-edit digit buffer (max 8 digits; `Enter` commit, `Esc` cancel), or `←/→` ±100.
+    Clamped to `100..=86_400_000` everywhere (app, config load) so tick deadlines cannot overflow.
   - Other rows: `←/→` cycles/toggles; effects apply live to app rendering/sorting/refresh behavior.
   - Bottom line shows per-option description text.
 - Config schema (`serde` + TOML):
   - `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`, `save_on_exit`,
     `sort_key`, `sort_reverse`.
   - `load()` is tolerant: missing file => defaults; unknown keys ignored; invalid values fallback.
-  - `save()` creates parent dir and writes TOML with a header comment.
+  - `save()` creates parent dir and writes TOML with a header comment to `pspp.conf.tmp`, then renames
+    over `pspp.conf` (atomic on the same filesystem).
 
 ## Help + filter (milestone 11)
 

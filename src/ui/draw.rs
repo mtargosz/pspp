@@ -59,10 +59,7 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
         render_mem_box(frame, mem_area, app);
     }
 
-    let total_used = app
-        .rows()
-        .iter()
-        .fold(0_u64, |sum, row| sum.saturating_add(row.own));
+    let total_used = app.mem_total_used();
     let total_pct = percentage(total_used, app.snapshot.total_mem);
     let status = Line::from(
         vec![
@@ -511,9 +508,9 @@ fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
             " menu ",
             Style::default().fg(theme.color(theme.title)),
         ));
+    let inner = block.inner(overlay);
     frame.render_widget(block, overlay);
 
-    let inner = Block::default().inner(overlay);
     let button_height = if inner.height >= 11 { 3 } else { 1 };
     let spacing = if button_height == 3 { 1 } else { 0 };
 
@@ -534,8 +531,13 @@ fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
             y,
             width: inner.width.saturating_sub(2),
             height: button_height,
-        };
+        }
+        .intersection(inner);
         button_rects[idx] = rect;
+        y = y.saturating_add(button_height + spacing);
+        if rect.is_empty() {
+            continue;
+        }
 
         let selected = *button == app.menu_selected();
         let border_color = if selected { theme.hi_fg } else { theme.main_fg };
@@ -555,8 +557,6 @@ fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
             .alignment(Alignment::Center)
             .style(Style::default().fg(theme.color(border_color)));
         frame.render_widget(label, rect);
-
-        y = y.saturating_add(button_height + spacing);
     }
 
     app.set_menu_hit_test(overlay, button_rects);
@@ -778,7 +778,7 @@ pub fn meter_fill_blocks(value: u64, scale: u64, width: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{draw, meter_fill_blocks};
-    use crate::ui::app::App;
+    use crate::ui::app::{App, AppMode};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
@@ -821,5 +821,26 @@ mod tests {
         assert_eq!(meter_fill_blocks(100, 100, 10), 10);
         assert_eq!(meter_fill_blocks(200, 100, 10), 10);
         assert_eq!(meter_fill_blocks(1, 100, 0), 0);
+    }
+
+    #[test]
+    fn every_mode_renders_at_tiny_sizes_without_panicking() {
+        let mut app = App::new(2_000);
+        for mode in [
+            AppMode::Normal,
+            AppMode::FilterInput,
+            AppMode::Menu,
+            AppMode::Options,
+            AppMode::Help,
+        ] {
+            app.mode = mode;
+            for (width, height) in [(1, 1), (2, 2), (10, 3), (20, 5), (30, 12), (80, 24)] {
+                let mut terminal =
+                    Terminal::new(TestBackend::new(width, height)).expect("terminal");
+                terminal
+                    .draw(|frame| draw(frame, &mut app))
+                    .unwrap_or_else(|err| panic!("{mode:?} at {width}x{height}: {err}"));
+            }
+        }
     }
 }

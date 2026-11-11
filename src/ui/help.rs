@@ -8,7 +8,10 @@ const NAVIGATION_KEYS: [(&str, &str); 7] = [
     ("↑/↓, j/k", "Move selection one row."),
     ("PgUp/PgDn", "Move by one page."),
     ("Home/End, g/G", "Jump to first/last row."),
-    ("q/Q, Ctrl-C, Ctrl-Q", "Quit pspp."),
+    (
+        "q/Q, Ctrl-C, Ctrl-Q",
+        "Quit pspp (Ctrl-C/Ctrl-Q from any mode).",
+    ),
     ("f/F or /", "Start filter input."),
     ("c/C", "Clear committed filter."),
     ("Esc", "Open main menu."),
@@ -31,9 +34,9 @@ const DISPLAY_KEYS: [(&str, &str); 7] = [
 ];
 
 const MENU_KEYS: [(&str, &str); 9] = [
-    ("Menu: ↑/↓, j/k", "Select Options / Help / Quit."),
-    ("Menu: Enter", "Activate selected menu button."),
-    ("Menu: Esc", "Close menu."),
+    ("Menu: ↑/↓, j/k, Tab", "Select Options / Help / Quit."),
+    ("Menu: Enter/Space", "Activate selected menu button."),
+    ("Menu: Esc/q/Q", "Close menu."),
     ("Options: ↑/↓, j/k", "Select option row."),
     ("Options: ←/→", "Change/toggle selected option."),
     ("Options: Enter", "Edit update_ms or advance value."),

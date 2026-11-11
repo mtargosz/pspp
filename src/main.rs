@@ -53,7 +53,9 @@ impl From<CliSort> for SortBy {
     about = "ps++ memory viewer and query tool",
     long_about = "pspp groups process memory by parent/child relationships.\n\
                   PATTERN is a case-insensitive substring match on COMM.\n\
-                  Regex-style !prefix patterns are not yet supported."
+                  Regex-style !prefix patterns are not yet supported.\n\n\
+                  TOTAL counts every process covered by the listed rows exactly once.\n\
+                  Exit status: 0 rows printed, 1 no matching rows, 2 usage or runtime error."
 )]
 struct Cli {
     #[arg(
@@ -77,7 +79,7 @@ struct Cli {
     #[arg(long, value_name = "FIELD", value_enum)]
     sort: Option<CliSort>,
 
-    #[arg(long, value_name = "N")]
+    #[arg(long, value_name = "N", value_parser = parse_top)]
     top: Option<usize>,
 
     #[arg(long)]
@@ -92,7 +94,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "MS",
-        help = "Refresh interval in milliseconds for TUI mode (minimum 100)"
+        help = "Refresh interval in milliseconds for TUI mode (100 to 86400000)"
     )]
     update_ms: Option<u64>,
 }
@@ -173,14 +175,27 @@ fn write_stdout_line(text: &str) -> io::Result<()> {
     stdout.write_all(b"\n")
 }
 
-fn run_query_mode(cli: &Cli, defaults: &config::Config) -> Result<bool, String> {
+fn parse_top(value: &str) -> Result<usize, String> {
+    match value.trim().parse::<usize>() {
+        Ok(0) => Err("must be at least 1".to_owned()),
+        Ok(top) => Ok(top),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// Returns the number of rows printed.
+fn run_query_mode(cli: &Cli, defaults: &config::Config) -> Result<usize, String> {
     let snapshot = collect::take_snapshot();
     let opts = cli.to_query_opts(defaults);
 
-    let output = query::run_query(&snapshot, &opts);
-    write_stdout_line(&output).map_err(|err| format!("failed to write stdout: {err}"))?;
-
-    Ok(!opts.json && query::count_matches(&snapshot, &opts) == 0)
+    let result = query::run_query(&snapshot, &opts);
+    match write_stdout_line(&result.output) {
+        // `pspp | head` closing the pipe early is not an error.
+        Err(err) if err.kind() != io::ErrorKind::BrokenPipe => {
+            Err(format!("failed to write stdout: {err}"))
+        }
+        _ => Ok(result.row_count),
+    }
 }
 
 fn cli_and_config_to_ui_settings(cli: &Cli, cfg: &config::Config) -> ui::UiSettings {
@@ -253,16 +268,18 @@ fn main() -> ExitCode {
         };
     }
 
+    // grep/pgrep-style status: 0 = rows printed, 1 = no matches, 2 = error.
     match run_query_mode(&cli, &cfg) {
-        Ok(no_matches) => {
-            if no_matches {
+        Ok(0) => {
+            if !cli.json {
                 eprintln!("no matches");
             }
-            ExitCode::SUCCESS
+            ExitCode::from(1)
         }
+        Ok(_) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("{err}");
-            ExitCode::from(1)
+            ExitCode::from(2)
         }
     }
 }
