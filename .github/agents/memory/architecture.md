@@ -9,7 +9,8 @@ src/
     mod.rs           — Snapshot API: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>
                        MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
     macos.rs         — sysinfo base + libproc proc_pid_rusage (ri_phys_footprint); graceful fallback
-    linux.rs         — /proc/<pid>/stat + status (rss/vsz) + smaps_rollup (pss/uss/swap); fallback to stat
+    linux.rs         — /proc/<pid>/stat (pid/ppid/comm/rss/vsz) + smaps_rollup (pss/uss/swap);
+                       permission/malformed-input fallback to RSS/VSZ-only records
   model/
     tree.rs          — pid→ppid forest (orphans → synthetic root); subtree rollup sums; flat
                        direct-children sums; sorting by any memory column; stable across refreshes

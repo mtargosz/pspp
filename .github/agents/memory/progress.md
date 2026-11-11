@@ -7,7 +7,7 @@
 - [x] 1. scaffold — Cargo.toml, .gitignore, module skeleton
 - [x] 2. agent-profiles — all 7 profiles in `.github/agents/`
 - [x] 2b. memory-store — this directory, seeded
-- [ ] 3. collector — cross-platform snapshot (RSS/VSZ; macOS footprint; Linux PSS/USS/swap)
+- [x] 3. collector — cross-platform snapshot (RSS/VSZ; macOS footprint; Linux PSS/USS/swap)
 - [ ] 4. tree-model — forest, rollup + flat aggregation, sorting, unit tests
 - [ ] 5. query-mode — pspp <query> stdout mode (filters, --json)
 - [ ] 6. tui-skeleton — ratatui shell: alt screen, mouse, tick loop, resize, quit
@@ -29,3 +29,13 @@
 - Workspace moved to `/Users/mtargosz/dev/projects/pspp` on user direction; commit per
   milestone, never push.
 - Scaffold, agent profiles, and memory store seeded (milestone 1+2).
+
+### 2026-11-11 — coder
+- Implemented milestone 3 collector scaffolding: `collect::MemSet`, `ProcRec`, `Snapshot`,
+  and `collect::take_snapshot()` platform dispatch.
+- Added macOS collector using `sysinfo` process enumeration and `libproc` `proc_pid_rusage`
+  (`RUSAGE_INFO_V2`) to capture `ri_phys_footprint`, with graceful fallback (`approximate=true`).
+- Added Linux collector parsing `/proc/<pid>/stat` for pid/ppid/comm/rss/vsz and
+  `/proc/<pid>/smaps_rollup` for PSS/USS/swap with permission-safe fallback.
+- Added parser unit tests (including comm containing `) (`) and a live snapshot invariant test.
+- Added temporary `main.rs` stub that snapshots and prints process count + total RSS.
