@@ -1,0 +1,28 @@
+{
+  "description": "pids 2 and 3 name each other as parent; the cycle must be broken without losing or double counting either.",
+  "total_mem": 1000000,
+  "used_mem": 400000,
+  "procs": [
+    {
+      "pid": 1,
+      "ppid": 0,
+      "comm": "init",
+      "rss": 1,
+      "vsz": 2
+    },
+    {
+      "pid": 2,
+      "ppid": 3,
+      "comm": "ping",
+      "rss": 2,
+      "vsz": 4
+    },
+    {
+      "pid": 3,
+      "ppid": 2,
+      "comm": "pong",
+      "rss": 4,
+      "vsz": 8
+    }
+  ]
+}

@@ -58,7 +58,13 @@ impl History {
         self.pushed += 1;
     }
 
-    pub fn clear(&mut self) {
+    #[cfg(test)]
+    pub fn pushed_count(&self) -> u64 {
+        self.pushed
+    }
+
+    #[cfg(test)]
+    fn clear(&mut self) {
         self.samples.clear();
         self.pushed = 0;
     }
@@ -98,17 +104,36 @@ pub enum GraphSymbols {
     Tty,
 }
 
+/// True for `linux`, `dumb`, or a `TERM` without "color" in its name — unless `COLORTERM` says
+/// the terminal does colour anyway (alacritty, kitty, wezterm … set `COLORTERM` but not a
+/// `*color*` TERM). A missing `TERM` is treated as colour-capable.
+pub fn term_lacks_color(term: Option<&str>, colorterm: Option<&str>) -> bool {
+    let Some(term) = term.map(str::trim).filter(|t| !t.is_empty()) else {
+        return false;
+    };
+    if matches!(term, "linux" | "dumb") {
+        return true;
+    }
+    let colorterm_set = colorterm.is_some_and(|c| !c.trim().is_empty());
+    !term.contains("color") && !colorterm_set
+}
+
 impl GraphSymbols {
-    /// Braille by default; the Linux console cannot render it, so `TERM=linux` selects tty.
-    pub fn from_term(term: Option<&str>) -> Self {
-        match term {
-            Some("linux") => Self::Tty,
-            _ => Self::Braille,
+    /// `auto` resolution: tty when forced or when the terminal advertises no colour support.
+    pub fn resolve_auto(force_tty: bool, term: Option<&str>, colorterm: Option<&str>) -> Self {
+        if force_tty || term_lacks_color(term, colorterm) {
+            Self::Tty
+        } else {
+            Self::Braille
         }
     }
 
-    pub fn detect() -> Self {
-        Self::from_term(std::env::var("TERM").ok().as_deref())
+    pub fn detect(force_tty: bool) -> Self {
+        Self::resolve_auto(
+            force_tty,
+            std::env::var("TERM").ok().as_deref(),
+            std::env::var("COLORTERM").ok().as_deref(),
+        )
     }
 
     /// Samples shown per terminal cell.
@@ -377,13 +402,25 @@ mod tests {
     }
 
     #[test]
-    fn symbol_selection() {
-        assert_eq!(GraphSymbols::from_term(Some("linux")), GraphSymbols::Tty);
+    fn auto_resolves_to_tty_when_forced_or_terminal_lacks_color() {
+        let auto = |force, term, colorterm| GraphSymbols::resolve_auto(force, term, colorterm);
+        assert_eq!(auto(true, Some("xterm-256color"), None), GraphSymbols::Tty);
         assert_eq!(
-            GraphSymbols::from_term(Some("xterm-256color")),
+            auto(false, Some("linux"), Some("truecolor")),
+            GraphSymbols::Tty
+        );
+        assert_eq!(auto(false, Some("dumb"), None), GraphSymbols::Tty);
+        assert_eq!(auto(false, Some("xterm"), None), GraphSymbols::Tty);
+        assert_eq!(
+            auto(false, Some("xterm-256color"), None),
             GraphSymbols::Braille
         );
-        assert_eq!(GraphSymbols::from_term(None), GraphSymbols::Braille);
+        // COLORTERM rescues terminals whose TERM has no "color" (kitty, alacritty, wezterm).
+        assert_eq!(
+            auto(false, Some("alacritty"), Some("truecolor")),
+            GraphSymbols::Braille
+        );
+        assert_eq!(auto(false, None, None), GraphSymbols::Braille);
     }
 
     #[test]

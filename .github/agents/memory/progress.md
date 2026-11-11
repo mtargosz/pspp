@@ -1,6 +1,6 @@
 # pspp — Progress board (living document)
 
-## Project status: COMPLETE
+## Project status: COMPLETE (follow-up milestones M15–M23 from the 2026-11-11 review are done)
 
 ## Status key: [ ] pending · [~] in progress · [x] done · [!] blocked
 
@@ -21,6 +21,15 @@
 - [x] 12. testing-pass — tester agent full pass
 - [x] 13. review-pass — reviewer agent full pass
 - [x] 14. docs — README, --help, man page
+- [x] M15 fix(collect): correct ppid on macOS without root
+- [x] M16 feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10
+- [x] M17 feat(ui): honest memory graph, used/total status, % column
+- [x] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
+- [x] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
+- [x] M20 feat(options): btop General parity and global keys
+- [x] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
+- [x] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
+- [x] M23 refactor: single source of truth for enums; docs pass
 
 ## Log
 
@@ -256,24 +265,87 @@
 - Verified `cargo build`, `cargo test` (68 unit + 5 integration), `cargo clippy --all-targets -- -D warnings`,
   `cargo fmt --check`, and `cargo doc --no-deps` all clean. Project status: COMPLETE.
 
+### 2026-11-11 — M15 (fix(collect): correct ppid on macOS without root)
+- macOS collector now takes `pid`/`ppid`/`p_comm` from `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_ALL)`
+  (unprivileged, same source as `ps`); buffer sized from a first call with headroom, retried on `ENOMEM`.
+  libc has no `kinfo_proc`, so the 648-byte entry is parsed by fixed byte offsets (pid 40, comm 243,
+  e_ppid 560) with bounds-checked reads. sysinfo still supplies name/RSS/VSZ; `proc_pid_rusage` footprint.
+- Live check unprivileged: 723 procs, 1 with ppid 0 (launchd) — was ~215.
+- Tests: own ppid == `getppid()`, launchd present, ≤4 parentless, partial-trailing-entry parse.
+
+### 2026-11-11 — M16 (feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10)
+- Query mode ignores `pspp.conf`; header `RSS Σ (rollup)`; JSON gains `mem` and `agg`.
+- Mode selection per the new rule; added `--query`, `-f/--filter` (`App::set_filter`, `run_tui(settings, filter)`).
+- Config persistence diffs initial vs final settings (`apply_changed_settings_to_config`).
+- Tests: `is_query_mode_requested` unit tests (incl. `--mem footprint` is not query mode), config-diff test,
+  3 integration tests (JSON `mem`/`agg`, header, `PSPP_CONFIG_DIR` isolation). README, man page, `--help` updated.
+
+### 2026-11-11 — M17 (feat(ui): honest memory graph, used/total status, % column)
+- `Snapshot::used_mem` (macOS `used_memory()`, Linux `MemTotal-MemAvailable` via tested `parse_meminfo`).
+- `mem` box plots `used_mem / total_mem`; summary `used X / Y ■■■ NN%  Σ RSS Z`; status line `used X / Y`.
+- `%` column in TUI + plain query output (`format_pct`) and `pct` in JSON rows; plain renderer rewritten
+  column-generic (also fixes width miscount of `Σ`). Help gained a "why totals can exceed RAM" section.
+- Linux target installed; `cargo check --target x86_64-unknown-linux-gnu` clean.
+
+### 2026-11-11 — M18 (fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort)
+- Filtered rows use `expanded`; commit/`set_filter` expands ancestors of direct matches.
+- Filter-input Esc restores the committed filter; help + README + man key tables updated.
+- `last_click` is `(pid, Instant)`; header hit rects stored in `App` (`set_header_hit_test`) and sorted on click.
+- `App::with_snapshot` introduced (needed for deterministic tests; M22 builds on it).
+- 6 new app tests (ancestor expansion, collapse/toggle while filtered, Esc restore, pid double-click, header sort).
+
+### 2026-11-11 — M19 (feat(ui): mouse in Options/Help overlays; context-sensitive hint bar)
+- Options/Help mouse handling + hit-test rects in `App`; Help scrollbar; mode-specific `hint_segments`.
+- Tests: options click/wheel/outside, help wheel/outside, hint truncation/mode content, and mouse
+  Down/ScrollUp/ScrollDown at every cell of a 10×3 frame in every mode (synthetic snapshot, fast).
+- Removed from deferred notes: "No mouse handling in the Options/Help overlays".
+
+### 2026-11-11 — M20 (feat(options): btop General parity and global keys)
+- Open questions answered by the user: keep `m`; load btop `.theme` files (see decisions.md).
+- New options/config keys: `color_theme`, `theme_background`, `truecolor`, `rounded_corners`, `vim_keys`,
+  `disable_mouse`, `clock_format`, `background_update`, `force_tty` (live-applied, described, persisted
+  only when changed). New `ui/clock.rs` (chrono), btop theme parser/loader in `ui/theme.rs`,
+  `GraphSymbols::resolve_auto`, `TruecolorMode`.
+- Global keys `+`/`-`, `F1`/`?`/`h`, `F2`/`o`; `l` expands; scrolling Options list; mouse capture sync.
+- Tests: config round-trip/tolerance for every new key, theme parsing/loading/overlay, clock formatting,
+  term colour detection, key routing (vim on/off, global keys vs text input), tick pausing, mouse disable,
+  option editors, theme cycling (temp dir, no env races), draw (clock, square corners, scrolling options).
+- Deps: added `chrono` (`default-features = false`, `clock`, `std`).
+
+### 2026-11-11 — M21 (perf(collect): background collection; lazy smaps_rollup; tree owns snapshot)
+- `collect::Collector` worker (tested with an injected source: non-blocking request, single in-flight,
+  kind forwarded); `App::{on_tick, poll_snapshot, apply_snapshot}`; UI loop polls the channel.
+- Linux: lazy `smaps_rollup` by kind, argv[0]-basename names, `parse_smaps_rollup`/`parse_cmdline_name`/
+  `smaps_approximate` unit tests (linux module compiles under `cfg(test)` everywhere).
+- `ProcTree::build(Snapshot)` owns records (`procs()`, `proc_count()`, `max_pid()`, `total_mem()`, `used_mem()`);
+  per-tick `ProcRec` clone gone. `Snapshot::taken_at` removed. PID column sized from the largest pid.
+- Removed from deferred notes: tree clone, dead `taken_at`.
+
+### 2026-11-11 — M22 (test: synthetic snapshots, fixtures, TestBackend screens, CI)
+- `App::with_snapshot` (introduced in M18) is the deterministic entry point; `from_settings` delegates to it.
+- `ui::draw::screens`: 7 whole-screen tests over a 4-level synthetic tree (rollup/flat, filtered/unfiltered,
+  braille/block/tty): tree glyphs, Σ values, `~` markers, `%`, meter fill by colour, graph glyph family,
+  mem summary, collapse-while-filtering.
+- `tests/fixtures/*.json` (6 scenarios) + `tests/model_tests.rs` (9 tests) via the new library crate.
+- Fixed while testing: dangling `├─` glyphs in filtered views (`relabel_last_children`).
+- `.github/workflows/ci.yml` added; `architecture.md` test layout corrected (it previously listed files that did not exist).
+
+### 2026-11-11 — M23 (refactor: single source of truth for enums; docs pass)
+- Enum consolidation (see decisions.md); `MemKind::available()` is a static slice; dead `sorted_pids`/`cmp_desc` removed.
+- Meter width scales with the terminal (12..=30); `Cargo.toml` gained `rust-version`, `repository`, `readme`,
+  `keywords`, `categories`.
+- Docs pass: README key tables + man-page KEY BINDINGS generated from `help::key_sections()`, README screen
+  capture generated from the renderer, all drift-checked by `cargo test --lib`; architecture.md module map and
+  public APIs refreshed.
+- Gates at the end of the series: build, test (unit + model + CLI), clippy `-D warnings`, fmt, doc, and
+  `cargo check --target x86_64-unknown-linux-gnu --all-targets` all clean.
+
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
-- macOS: without root, `proc_pidinfo(PROC_PIDTBSDINFO)` fails for other users' processes, so sysinfo
-  reports no parent and they become roots (~220 on a typical desktop). Pre-existing; only fixable with
-  elevated privileges or a different ppid source (e.g. `sysctl KERN_PROC_PID`, which works unprivileged).
-  Worth a follow-up: it distorts the rollup tree when not running as root.
 
 ## Review notes (deferred, 2026-11-11 reviewer)
-- `ProcTree::build` clones every `ProcRec` while `App` also keeps the snapshot (≈2× process memory per
-  tick). Could borrow or move the snapshot into the tree.
-- Filter mode ignores the expanded set, so Space/Enter toggles state with no visible effect until the
-  filter is cleared.
-- Esc in filter input clears the filter (btop restores the previous one). Documented as intended.
-- `--update-ms` from the CLI is persisted by `save_on_exit` (btop does not persist CLI overrides).
 - Config save rewrites the file: user comments and unknown keys are dropped.
 - Menu is a simplified btop menu (no ASCII-art banner, no 80x24 minimum-size message).
-- No mouse handling in the Options/Help overlays.
-- Double-click detection is keyed by row index, which can shift if a tick lands between clicks.
 - `ProcTree::sorted_pids` (Comm arm case-sensitive) is only used by tests; `pub mod model` in
   `main.rs` keeps it from being flagged as dead. Consider removing or aligning with the UI sort.
 - Query mode would print duplicate rows if a snapshot ever contained duplicate pids (theoretical).

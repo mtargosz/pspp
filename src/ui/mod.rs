@@ -1,6 +1,7 @@
 //! Interactive ratatui terminal interface, event loop, theme, graphs, and overlays.
 
 pub mod app;
+pub mod clock;
 pub mod draw;
 pub mod graph;
 pub mod help;
@@ -22,10 +23,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-pub use app::{
-    parse_agg_mode_config, parse_mem_kind_config, parse_sort_config, sort_to_config,
-    GraphSymbolSetting, UiSettings,
-};
+pub use app::{GraphSymbolSetting, UiSettings};
 
 type PanicHook = dyn for<'a> Fn(&PanicHookInfo<'a>) + Send + Sync + 'static;
 
@@ -65,12 +63,23 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub fn run_tui(settings: UiSettings) -> Result<UiSettings, Box<dyn Error>> {
+pub fn run_tui(
+    settings: UiSettings,
+    initial_filter: Option<String>,
+) -> Result<UiSettings, Box<dyn Error>> {
     let mut app = app::App::from_settings(settings);
+    if let Some(filter) = initial_filter {
+        app.set_filter(&filter);
+    }
     let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    // `setup_terminal_state` enabled mouse capture; `disable_mouse` is applied (and re-applied
+    // when toggled in Options) at the top of every iteration.
+    let mut mouse_captured = true;
 
     while !app.should_quit {
+        sync_mouse_capture(&mut mouse_captured, app.mouse_enabled())?;
+        app.poll_snapshot();
         terminal.draw(|frame| draw::draw(frame, &mut app))?;
 
         let timeout = app.poll_timeout(Instant::now());
@@ -91,6 +100,20 @@ pub fn run_tui(settings: UiSettings) -> Result<UiSettings, Box<dyn Error>> {
     drop(terminal);
     terminal_guard.restore()?;
     Ok(app.ui_settings())
+}
+
+fn sync_mouse_capture(captured: &mut bool, wanted: bool) -> io::Result<()> {
+    if *captured == wanted {
+        return Ok(());
+    }
+    let mut stdout = io::stdout();
+    if wanted {
+        execute!(stdout, EnableMouseCapture)?;
+    } else {
+        execute!(stdout, DisableMouseCapture)?;
+    }
+    *captured = wanted;
+    Ok(())
 }
 
 fn setup_terminal_state() -> io::Result<()> {

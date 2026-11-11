@@ -1,22 +1,102 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::str::FromStr;
+
+use clap::ValueEnum;
 
 use crate::collect::{ProcRec, Snapshot};
 use crate::model::MemKind;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, ValueEnum)]
 pub enum AggMode {
+    /// Subtree sum: the process plus all of its descendants.
+    #[default]
     Rollup,
+    /// Direct-children sum only.
     Flat,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+impl AggMode {
+    pub const ALL: [AggMode; 2] = [AggMode::Rollup, AggMode::Flat];
+
+    /// Config/CLI spelling (lowercase).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AggMode::Rollup => "rollup",
+            AggMode::Flat => "flat",
+        }
+    }
+
+    pub fn toggled(self) -> AggMode {
+        match self {
+            AggMode::Rollup => AggMode::Flat,
+            AggMode::Flat => AggMode::Rollup,
+        }
+    }
+}
+
+impl fmt::Display for AggMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AggMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lowered = s.trim().to_ascii_lowercase();
+        AggMode::ALL
+            .into_iter()
+            .find(|mode| mode.as_str() == lowered)
+            .ok_or_else(|| format!("unknown aggregation mode: {s}"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, ValueEnum)]
 pub enum SortBy {
+    /// Aggregated (Σ) memory.
     #[default]
+    #[value(name = "agg")]
     Aggregated,
+    /// The process's own memory.
     Own,
     Pid,
     Comm,
+}
+
+impl SortBy {
+    /// Order used when cycling the sort key.
+    pub const ALL: [SortBy; 4] = [SortBy::Aggregated, SortBy::Own, SortBy::Pid, SortBy::Comm];
+
+    /// Config/CLI spelling (lowercase).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SortBy::Aggregated => "agg",
+            SortBy::Own => "own",
+            SortBy::Pid => "pid",
+            SortBy::Comm => "comm",
+        }
+    }
+}
+
+impl fmt::Display for SortBy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SortBy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lowered = s.trim().to_ascii_lowercase();
+        SortBy::ALL
+            .into_iter()
+            .find(|sort| sort.as_str() == lowered)
+            .ok_or_else(|| format!("unknown sort key: {s}"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,17 +136,28 @@ pub struct ProcTree {
     nodes: HashMap<i32, ProcNode>,
     ordered_pids: Vec<i32>,
     root_children: Vec<i32>,
+    total_mem: u64,
+    used_mem: u64,
 }
 
 impl ProcTree {
-    pub fn build(snapshot: &Snapshot) -> ProcTree {
-        let mut nodes = HashMap::with_capacity(snapshot.procs.len());
-        for rec in &snapshot.procs {
-            nodes.entry(rec.pid).or_insert_with(|| ProcNode {
-                rec: rec.clone(),
-                parent: None,
-                children: Vec::new(),
-            });
+    /// Builds the forest, taking ownership of the snapshot's process records (no copies).
+    /// Duplicate pids keep the first record.
+    pub fn build(snapshot: Snapshot) -> ProcTree {
+        let Snapshot {
+            procs,
+            total_mem,
+            used_mem,
+        } = snapshot;
+        let mut nodes = HashMap::with_capacity(procs.len());
+        for rec in procs {
+            if let std::collections::hash_map::Entry::Vacant(slot) = nodes.entry(rec.pid) {
+                slot.insert(ProcNode {
+                    rec,
+                    parent: None,
+                    children: Vec::new(),
+                });
+            }
         }
 
         let mut ordered_pids: Vec<i32> = nodes.keys().copied().collect();
@@ -116,7 +207,35 @@ impl ProcTree {
             nodes,
             ordered_pids,
             root_children,
+            total_mem,
+            used_mem,
         }
+    }
+
+    /// Every process record, in ascending pid order.
+    pub fn procs(&self) -> impl Iterator<Item = &ProcRec> {
+        self.ordered_pids
+            .iter()
+            .filter_map(|pid| self.nodes.get(pid).map(|node| &node.rec))
+    }
+
+    pub fn proc_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Largest pid present (0 when empty); used to size the PID column.
+    pub fn max_pid(&self) -> i32 {
+        self.ordered_pids.last().copied().unwrap_or(0)
+    }
+
+    /// Total physical memory at snapshot time, in bytes.
+    pub fn total_mem(&self) -> u64 {
+        self.total_mem
+    }
+
+    /// System memory in use at snapshot time, in bytes.
+    pub fn used_mem(&self) -> u64 {
+        self.used_mem
     }
 
     pub fn root_children(&self) -> &[i32] {
@@ -232,33 +351,6 @@ impl ProcTree {
         }
 
         rows
-    }
-
-    pub fn sorted_pids(&self, rows: &HashMap<i32, AggregateRow>, sort_by: SortBy) -> Vec<i32> {
-        let mut pids = self.ordered_pids.clone();
-        match sort_by {
-            SortBy::Aggregated => {
-                pids.sort_by(|a, b| Self::cmp_desc(rows.get(a), rows.get(b), |row| row.aggregated))
-            }
-            SortBy::Own => {
-                pids.sort_by(|a, b| Self::cmp_desc(rows.get(a), rows.get(b), |row| row.own))
-            }
-            SortBy::Pid => pids.sort(),
-            SortBy::Comm => pids.sort_by(|a, b| {
-                let a_comm = self
-                    .nodes
-                    .get(a)
-                    .map(|node| node.rec.comm.as_str())
-                    .unwrap_or_default();
-                let b_comm = self
-                    .nodes
-                    .get(b)
-                    .map(|node| node.rec.comm.as_str())
-                    .unwrap_or_default();
-                a_comm.cmp(b_comm)
-            }),
-        }
-        pids
     }
 
     pub fn flatten_visible(&self, expanded: &HashSet<i32>) -> Vec<VisibleRow> {
@@ -517,16 +609,6 @@ impl ProcTree {
         }
     }
 
-    fn cmp_desc(
-        a: Option<&AggregateRow>,
-        b: Option<&AggregateRow>,
-        value: impl Fn(&AggregateRow) -> u64,
-    ) -> Ordering {
-        let a_val = a.map(&value).unwrap_or(0);
-        let b_val = b.map(value).unwrap_or(0);
-        b_val.cmp(&a_val)
-    }
-
     fn sorted_pid_list(
         &self,
         pids: &[i32],
@@ -601,7 +683,6 @@ impl ProcTree {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-    use std::time::Instant;
 
     use crate::collect::{MemSet, ProcRec, Snapshot};
     use crate::model::{AggMode, MemKind, ProcTree, SortBy};
@@ -631,13 +712,13 @@ mod tests {
         Snapshot {
             procs,
             total_mem: 0,
-            taken_at: Instant::now(),
+            used_mem: 0,
         }
     }
 
     #[test]
     fn deep_chain_rollup_and_flat_match_requirements() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(1, 0, "a", 10),
             proc(2, 1, "b", 20),
             proc(3, 2, "c", 30),
@@ -657,7 +738,7 @@ mod tests {
 
     #[test]
     fn build_attaches_orphans_self_links_and_cycles_to_root_safely() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(0, 1, "real-zero", 9),
             proc(1, 0, "root", 1),
             proc(2, 1, "child-a", 2),
@@ -694,7 +775,7 @@ mod tests {
 
     #[test]
     fn rollup_uses_saturating_add() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(1, 0, "a", u64::MAX),
             proc(2, 1, "b", 10),
         ]));
@@ -709,7 +790,7 @@ mod tests {
         let mut child = proc(2, 1, "b", 20);
         child.mem.pss = None;
 
-        let tree = ProcTree::build(&snapshot(vec![root, child]));
+        let tree = ProcTree::build(snapshot(vec![root, child]));
         let rollup = tree.rollup(MemKind::Pss);
 
         assert_eq!(rollup.get(&1).map(|row| row.aggregated), Some(42));
@@ -721,7 +802,7 @@ mod tests {
 
     #[test]
     fn flatten_visible_respects_expanded_state() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(1, 0, "a", 1),
             proc(2, 1, "b", 2),
             proc(3, 1, "c", 3),
@@ -751,23 +832,62 @@ mod tests {
     }
 
     #[test]
-    fn sorting_helpers_are_stable() {
-        let tree = ProcTree::build(&snapshot(vec![
-            proc(1, 0, "z", 5),
-            proc(2, 0, "a", 5),
-            proc(3, 0, "b", 1),
-        ]));
-        let rows = tree.rollup(MemKind::Rss);
+    fn enum_string_forms_are_the_single_source_of_truth() {
+        use clap::ValueEnum;
+        for mode in AggMode::ALL {
+            assert_eq!(mode.to_string(), mode.as_str());
+            assert_eq!(mode.as_str().parse::<AggMode>(), Ok(mode));
+            assert_eq!("  FLAT ".parse::<AggMode>().ok(), Some(AggMode::Flat));
+            assert_eq!(
+                mode.to_possible_value().map(|v| v.get_name().to_owned()),
+                Some(mode.as_str().to_owned())
+            );
+        }
+        assert_eq!(AggMode::default(), AggMode::Rollup);
+        assert_eq!(AggMode::Rollup.toggled(), AggMode::Flat);
+        assert_eq!(AggMode::Flat.toggled(), AggMode::Rollup);
+        assert!("sideways".parse::<AggMode>().is_err());
 
-        assert_eq!(tree.sorted_pids(&rows, SortBy::Aggregated), vec![1, 2, 3]);
-        assert_eq!(tree.sorted_pids(&rows, SortBy::Own), vec![1, 2, 3]);
-        assert_eq!(tree.sorted_pids(&rows, SortBy::Pid), vec![1, 2, 3]);
-        assert_eq!(tree.sorted_pids(&rows, SortBy::Comm), vec![2, 3, 1]);
+        for sort in SortBy::ALL {
+            assert_eq!(sort.to_string(), sort.as_str());
+            assert_eq!(sort.as_str().parse::<SortBy>(), Ok(sort));
+            assert_eq!(
+                sort.to_possible_value().map(|v| v.get_name().to_owned()),
+                Some(sort.as_str().to_owned())
+            );
+        }
+        assert_eq!(SortBy::value_variants().len(), SortBy::ALL.len());
+        assert!("name".parse::<SortBy>().is_err());
+    }
+
+    #[test]
+    fn tree_owns_snapshot_records_and_exposes_system_memory() {
+        let mut snap = snapshot(vec![
+            proc(30, 1, "c", 3),
+            proc(1, 0, "a", 1),
+            proc(30, 1, "dup", 99),
+            proc(7, 1, "b", 2),
+        ]);
+        snap.total_mem = 1000;
+        snap.used_mem = 400;
+        let tree = ProcTree::build(snap);
+
+        let pids: Vec<i32> = tree.procs().map(|p| p.pid).collect();
+        assert_eq!(pids, vec![1, 7, 30], "ascending, duplicates dropped");
+        assert_eq!(
+            tree.proc(30).map(|p| p.comm.as_str()),
+            Some("c"),
+            "first record wins"
+        );
+        assert_eq!(tree.proc_count(), 3);
+        assert_eq!(tree.max_pid(), 30);
+        assert_eq!((tree.total_mem(), tree.used_mem()), (1000, 400));
+        assert_eq!(ProcTree::default().max_pid(), 0);
     }
 
     #[test]
     fn filter_match_set_keeps_matching_leaf_ancestors() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(1, 0, "root", 1),
             proc(2, 1, "middle", 1),
             proc(3, 2, "TargetLeaf", 1),
@@ -780,7 +900,7 @@ mod tests {
 
     #[test]
     fn filter_match_set_returns_empty_when_nothing_matches() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(1, 0, "alpha", 1),
             proc(2, 1, "beta", 1),
         ]));
@@ -791,7 +911,7 @@ mod tests {
 
     #[test]
     fn filter_match_set_with_empty_filter_returns_all_rows() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(10, 0, "one", 1),
             proc(11, 10, "two", 1),
             proc(12, 11, "three", 1),
@@ -802,7 +922,7 @@ mod tests {
 
     #[test]
     fn filter_match_set_folds_unicode_case() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(1, 0, "CAFÉ", 1),
             proc(2, 1, "école", 1),
             proc(3, 0, "other", 1),
@@ -818,7 +938,7 @@ mod tests {
 
     #[test]
     fn single_process_is_its_own_root_without_children() {
-        let tree = ProcTree::build(&snapshot(vec![proc(1, 0, "init", 42)]));
+        let tree = ProcTree::build(snapshot(vec![proc(1, 0, "init", 42)]));
         assert_eq!(tree.root_children(), &[1]);
         let rollup = tree.rollup(MemKind::Rss);
         let row = rollup.get(&1).expect("row for lone process");
@@ -829,7 +949,7 @@ mod tests {
 
     #[test]
     fn comm_sort_is_case_insensitive_with_pid_tiebreak_in_both_directions() {
-        let tree = ProcTree::build(&snapshot(vec![
+        let tree = ProcTree::build(snapshot(vec![
             proc(5, 0, "beta", 1),
             proc(3, 0, "Alpha", 1),
             proc(4, 0, "alpha", 1),

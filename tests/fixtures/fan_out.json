@@ -1,0 +1,49 @@
+{
+  "description": "One parent with five direct children.",
+  "total_mem": 1000000,
+  "used_mem": 400000,
+  "procs": [
+    {
+      "pid": 1,
+      "ppid": 0,
+      "comm": "supervisor",
+      "rss": 5,
+      "vsz": 10
+    },
+    {
+      "pid": 2,
+      "ppid": 1,
+      "comm": "w1",
+      "rss": 1,
+      "vsz": 2
+    },
+    {
+      "pid": 3,
+      "ppid": 1,
+      "comm": "w2",
+      "rss": 2,
+      "vsz": 4
+    },
+    {
+      "pid": 4,
+      "ppid": 1,
+      "comm": "w3",
+      "rss": 3,
+      "vsz": 6
+    },
+    {
+      "pid": 5,
+      "ppid": 1,
+      "comm": "w4",
+      "rss": 4,
+      "vsz": 8
+    },
+    {
+      "pid": 6,
+      "ppid": 1,
+      "comm": "w5",
+      "rss": 5,
+      "vsz": 10
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "description": "Five processes, each the child of the previous one (depth 5).",
+  "total_mem": 1000000,
+  "used_mem": 400000,
+  "procs": [
+    {
+      "pid": 1,
+      "ppid": 0,
+      "comm": "init",
+      "rss": 10,
+      "vsz": 20
+    },
+    {
+      "pid": 2,
+      "ppid": 1,
+      "comm": "a",
+      "rss": 10,
+      "vsz": 20
+    },
+    {
+      "pid": 3,
+      "ppid": 2,
+      "comm": "b",
+      "rss": 10,
+      "vsz": 20
+    },
+    {
+      "pid": 4,
+      "ppid": 3,
+      "comm": "c",
+      "rss": 10,
+      "vsz": 20
+    },
+    {
+      "pid": 5,
+      "ppid": 4,
+      "comm": "d",
+      "rss": 10,
+      "vsz": 20
+    }
+  ]
+}
