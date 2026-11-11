@@ -1,3 +1,5 @@
+//! Persistent TOML configuration loading and atomic saving (`pspp.conf`).
+
 use std::fs;
 use std::io;
 use std::path::PathBuf;

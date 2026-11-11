@@ -1,0 +1,429 @@
+.TH PSPP 1 "2026-11-11" "pspp 0.1.0" "User Commands"
+.SH NAME
+pspp \- interactive and scriptable process memory viewer grouped by parent
+.SH SYNOPSIS
+.B pspp
+.RB [ \-\-update\-ms
+.IR MS ]
+.br
+.B pspp
+.RI [ OPTIONS ]
+.RI [ PATTERN ]
+.SH DESCRIPTION
+.B pspp
+("ps plus plus") sums memory used by running processes grouped by their parent
+process
+.RI ( "pid <- ppid" ),
+exposing the true memory footprint of multi-process applications such as
+browsers, WebView/Electron apps, build tools, and worker supervisors.
+.PP
+When invoked on an interactive terminal with no query arguments,
+.B pspp
+opens a live, mouse-enabled terminal interface inspired by
+.BR btop (1)
+with braille memory history graphs, a grass-green to bloody-red usage gradient,
+and an expandable process tree.
+When any query option or
+.I PATTERN
+is provided\(emor when standard output is piped or redirected\(em\fBpspp\fR
+runs a single snapshot in non-interactive query mode, prints a plain table or
+JSON document to standard output, and exits.
+.SS Aggregation Modes
+.TP
+.B rollup
+Sums each process together with all of its descendants (children,
+grandchildren, and deeper).
+Default in both TUI and query mode.
+.TP
+.B flat
+Sums only direct children under each parent process, keeping parent and child
+layers separate.
+.PP
+In query mode, the final
+.B TOTAL
+row (and JSON
+.BR total )
+counts every process covered by the returned rows at most once: in
+.B rollup
+mode, rows that already have an ancestor in the returned set are not added a
+second time.
+.SS Memory Metrics and Approximate Values
+Depending on the platform,
+.B pspp
+supports:
+.TP
+.B rss
+Resident Set Size: RAM the process is using right now, including shared pages
+also mapped by other processes (macOS and Linux; default).
+.TP
+.B vsz
+Virtual Size: total virtual address space reserved by the process, most of
+which is not backed by physical RAM (macOS and Linux).
+.TP
+.B footprint
+Apple's physical footprint
+.RI ( ri_phys_footprint
+via
+.BR proc_pid_rusage ),
+matching Activity Monitor's Memory column (macOS only).
+.TP
+.B pss
+Proportional Set Size from
+.IR /proc/<pid>/smaps_rollup :
+RAM used with shared pages divided evenly across sharing processes (Linux
+only).
+.TP
+.B uss
+Unique Set Size
+.RI ( "Private_Clean + Private_Dirty" ):
+RAM private to a single process\(emroughly what killing it frees immediately
+(Linux only).
+.TP
+.B swap
+Swapped-out bytes reported by
+.I /proc/<pid>/smaps_rollup
+(Linux only).
+.PP
+When per-process privileged metrics are unreadable without elevated permissions,
+.B pspp
+keeps the process in the snapshot and appends a trailing tilde
+.RB ( ~ )
+to indicate that a value or aggregated sum is approximate.
+On macOS without root privileges, processes owned by other users have
+unreadable parent info via
+.B proc_pidinfo
+and appear as top-level roots.
+.SH OPTIONS
+.TP
+.I PATTERN
+Case-insensitive substring filter matched against process command names
+.RB ( COMM ).
+Triggers non-interactive query mode.
+Regex-style
+.B !
+prefixes are not currently supported.
+.TP
+.BI \-\-pid " PID"
+Restrict query output to
+.I PID
+and its descendant subtree.
+Triggers query mode.
+.TP
+.BI \-\-mem " KIND"
+Select memory metric:
+.BR rss ,
+.BR vsz ,
+.B footprint
+(macOS), or
+.BR pss ,
+.BR uss ,
+.B swap
+(Linux).
+Triggers query mode.
+.TP
+.BI \-\-agg " MODE"
+Select aggregation mode:
+.B rollup
+or
+.BR flat .
+Triggers query mode.
+.TP
+.BI \-\-min " SIZE"
+Filter out rows whose aggregated memory is below
+.IR SIZE .
+Accepts byte integers or binary unit suffixes (case-insensitive):
+.BR B ,
+.BR K / KB / KiB ,
+.BR M / MB / MiB ,
+.BR G / GB / GiB ,
+.BR T / TB / TiB ,
+.BR P / PB / PiB
+(for example,
+.BR 512K ,
+.BR 100M ,
+.BR 1.5G ).
+Triggers query mode.
+.TP
+.BI \-\-sort " FIELD"
+Sort query rows by
+.B agg
+(aggregated memory, descending),
+.B own
+(own memory, descending),
+.B pid
+(ascending), or
+.B comm
+(case-insensitive ascending).
+Ties break by ascending PID.
+Triggers query mode.
+.TP
+.BI \-\-top " N"
+Show at most
+.I N
+rows after sorting
+.RI ( N
+must be at least 1).
+Triggers query mode.
+.TP
+.B \-\-json
+Format query output as pretty-printed JSON
+.RB ( "{ ""rows"": [...], ""total"": <bytes> }" )
+with raw integer byte values.
+Triggers query mode.
+.TP
+.B \-\-base10
+Format human-readable sizes using decimal powers of 1000
+.RB ( KB / MB / GB )
+instead of binary powers of 1024
+.RB ( KiB / MiB / GiB ).
+Triggers query mode.
+.TP
+.BI \-\-update\-ms " MS"
+Refresh interval in milliseconds for interactive TUI mode, clamped to
+.BR 100 .. 86400000
+(default:
+.BR 2000 ,
+or
+.B update_ms
+from
+.IR pspp.conf ).
+.TP
+.BR \-h ", " \-\-help
+Print short
+.RB ( \-h )
+or detailed
+.RB ( \-\-help )
+usage information and exit.
+.TP
+.BR \-V ", " \-\-version
+Print version information and exit.
+.SH KEY BINDINGS
+The interactive TUI supports keyboard control across all views and overlays:
+.SS Navigation
+.TP
+.B Up/Down, j/k
+Move selection one row.
+.TP
+.B PgUp/PgDn
+Move selection by one page.
+.TP
+.B Home/End, g/G
+Jump to first or last visible row.
+.TP
+.B q/Q, Ctrl\-C, Ctrl\-Q
+Quit
+.B pspp
+.RB ( Ctrl\-C
+and
+.B Ctrl\-Q
+quit immediately from any mode or overlay).
+.TP
+.B f/F, /
+Start interactive
+.B COMM
+substring filter input.
+.TP
+.B c/C
+Clear the committed filter.
+.TP
+.B Esc
+Open the main menu overlay
+.RB ( Options " / " Help " / " Quit ).
+.SS Tree Controls
+.TP
+.B Space, Enter
+Toggle expand/collapse on the selected process node.
+.TP
+.B Left
+Collapse the selected node if expanded, otherwise jump to its parent node.
+.TP
+.B Right
+Expand the selected node.
+.SS Display & Filter Input
+.TP
+.B e/E
+Toggle aggregation mode between
+.B rollup
+and
+.BR flat .
+.TP
+.B m/M
+Cycle through memory metrics available on the current OS.
+.TP
+.B s
+Cycle sort key
+.RB ( agg " -> " own " -> " pid " -> " comm ).
+.TP
+.B S, r/R
+Reverse sort direction.
+.TP
+.B Filter input
+Type printable characters (including spaces);
+.B Backspace
+deletes one character;
+.B Enter
+commits the filter;
+.B Esc
+clears the filter and exits filter input.
+.SS Menu, Options, and Help Overlays
+.TP
+.B Menu: Up/Down, j/k, Tab, Shift\-Tab
+Move between
+.BR Options ,
+.BR Help ,
+and
+.BR Quit .
+.TP
+.B Menu: Enter, Space
+Activate the selected menu button.
+.TP
+.B Menu: Esc, q/Q
+Close the menu and return to the process table.
+.TP
+.B Options: Up/Down, j/k
+Select a setting row.
+.TP
+.B Options: Left/Right
+Cycle or toggle the selected setting
+.RB ( update_ms
+steps by +/-100 ms).
+.TP
+.B Options: Enter
+Open the numeric editor on
+.B update_ms
+(digits append,
+.B Backspace
+deletes,
+.B Enter
+commits,
+.B Esc
+cancels) or advance other settings.
+.TP
+.B Options: Esc, q/Q
+Close Options and return to the menu.
+.TP
+.B Help: Up/Down, j/k, PgUp/PgDn
+Scroll help text;
+.B Esc
+or
+.B q/Q
+closes Help and returns to the menu.
+.SS Mouse Actions
+.TP
+.B Wheel up/down
+Scroll process selection by 3 rows.
+.TP
+.B Left click row
+Select row.
+.TP
+.B Left click [+]/[\-] or double\-click row
+Toggle expand/collapse on that node.
+.TP
+.B Menu click
+Click a menu button to activate it; click outside the menu box to close it.
+.SH EXIT STATUS
+In query mode,
+.B pspp
+uses
+.BR grep (1)-style
+exit codes:
+.TP
+.B 0
+At least one matching row was printed (an early closed pipe on stdout, such as
+.BR "pspp | head" ,
+also exits 0).
+In TUI mode, clean exit returns 0.
+.TP
+.B 1
+Query matched zero rows (plain mode also prints
+.B "no matches"
+to standard error;
+.B \-\-json
+prints
+.BR "{""rows"":[],""total"":0}" ).
+In TUI mode, terminal initialization/runtime failure returns 1.
+.TP
+.B 2
+Command-line usage error (invalid option, unknown/unavailable
+.BR \-\-mem ,
+bad
+.B \-\-min
+size, or
+.BR "\-\-top 0" )
+or standard output write error.
+.SH FILES
+.TP
+.I $PSPP_CONFIG_DIR/pspp.conf
+Overrides the default configuration file location when
+.B PSPP_CONFIG_DIR
+is set and non-empty.
+.TP
+.I ~/.config/pspp/pspp.conf
+Default TOML configuration file on Linux (or
+.IR $XDG_CONFIG_HOME/pspp/pspp.conf ).
+.TP
+.I ~/Library/Application Support/pspp/pspp.conf
+Default TOML configuration file on macOS (via platform config directory lookup).
+.PP
+Supported TOML keys:
+.BR update_ms ,
+.BR mem_kind ,
+.BR agg_mode ,
+.BR graph_symbol ,
+.BR base10 ,
+.BR save_on_exit ,
+.BR sort_key ,
+and
+.BR sort_reverse .
+When
+.B save_on_exit
+is
+.B true
+(default), TUI option changes are saved atomically via a temporary sibling file
+on exit.
+.SH EXAMPLES
+Launch the interactive TUI with default settings:
+.PP
+.RS 4
+.nf
+pspp
+.fi
+.RE
+.PP
+Print the top 5 process subtrees by Resident Set Size:
+.PP
+.RS 4
+.nf
+pspp \-\-top 5
+.fi
+.RE
+.PP
+Find processes matching "chrome" whose subtree uses at least 200 MiB:
+.PP
+.RS 4
+.nf
+pspp chrome \-\-min 200M
+.fi
+.RE
+.PP
+Inspect direct-child memory on macOS using physical footprint:
+.PP
+.RS 4
+.nf
+pspp \-\-mem footprint \-\-agg flat \-\-top 10
+.fi
+.RE
+.PP
+Emit JSON for a specific PID subtree and extract total bytes with
+.BR jq (1):
+.PP
+.RS 4
+.nf
+pspp \-\-pid 1 \-\-json | jq '.total'
+.fi
+.RE
+.SH SEE ALSO
+.BR ps (1),
+.BR pgrep (1),
+.BR top (1),
+.BR btop (1)

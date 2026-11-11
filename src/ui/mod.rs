@@ -1,3 +1,5 @@
+//! Interactive ratatui terminal interface, event loop, theme, graphs, and overlays.
+
 pub mod app;
 pub mod draw;
 pub mod graph;

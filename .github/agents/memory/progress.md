@@ -1,5 +1,7 @@
 # pspp — Progress board (living document)
 
+## Project status: COMPLETE
+
 ## Status key: [ ] pending · [~] in progress · [x] done · [!] blocked
 
 ## Plan (dependency order)
@@ -18,7 +20,7 @@
 - [x] 11. help — plain-English memory explanations, filter (f, /)
 - [x] 12. testing-pass — tester agent full pass
 - [x] 13. review-pass — reviewer agent full pass
-- [ ] 14. docs — README, --help, man page
+- [x] 14. docs — README, --help, man page
 
 ## Log
 
@@ -231,6 +233,28 @@
   toml). Nothing removed.
 - Suite: `cargo test` 68 unit + 5 integration green; `cargo clippy --all-targets -D warnings` and
   `cargo fmt --check` clean.
+
+### 2026-11-11 — documentator (milestone 14)
+- Wrote `README.md`: overview & motivation, build/install + macOS root/ppid note, TUI guide
+  (exact `help.rs` key bindings & mouse tables, screenshot placeholder comment, `pspp.conf` +
+  `PSPP_CONFIG_DIR` + `save_on_exit` reference), query mode guide (6 realistic examples incl.
+  `--json | jq`, `--mem`/`--agg` combos, `--min`, `TOTAL` deduplication, and `0`/`1`/`2` exit
+  codes), plain-English memory type guide + `~` approximate markers, and multi-agent development /
+  `memory/*.md` documentation.
+- Wrote `doc/pspp.1` (roff man page covering `NAME`, `SYNOPSIS`, `DESCRIPTION`, `OPTIONS`,
+  `KEY BINDINGS`, `EXIT STATUS`, `FILES`, `EXAMPLES`, `SEE ALSO`); verified rendering via `man`
+  and zero warnings via `mandoc -Tlint`.
+- Added crate-level `//!` doc comment in `src/main.rs` and module-level `//!` one-liners in
+  `src/collect/mod.rs`, `src/model/mod.rs`, `src/query/mod.rs`, `src/ui/mod.rs`, and `src/config.rs`.
+- Consistency audit & `--help` polish:
+  - Filled in 6 blank/incomplete clap `help` descriptions in `src/main.rs` (`--mem`, `--agg`,
+    `--min`, `--sort`, `--top`, `--json`), clarified TUI vs query mode selection in `long_about`,
+    and added CLI examples (`after_long_help`).
+  - Documented `dirs::config_dir()` platform difference (`~/.config/pspp/pspp.conf` on Linux vs
+    `~/Library/Application Support/pspp/pspp.conf` on macOS, plus `$PSPP_CONFIG_DIR` override) and
+    `Shift-Tab` menu navigation alongside `help.rs` tables.
+- Verified `cargo build`, `cargo test` (68 unit + 5 integration), `cargo clippy --all-targets -- -D warnings`,
+  `cargo fmt --check`, and `cargo doc --no-deps` all clean. Project status: COMPLETE.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.

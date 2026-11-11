@@ -1,3 +1,6 @@
+//! `pspp` ("ps++") — interactive btop-style TUI and scriptable query CLI for
+//! viewing process memory grouped by parent/child (`pid <- ppid`) relationships.
+
 mod collect;
 mod config;
 pub mod model;
@@ -50,12 +53,20 @@ impl From<CliSort> for SortBy {
 #[command(
     name = "pspp",
     version,
-    about = "ps++ memory viewer and query tool",
-    long_about = "pspp groups process memory by parent/child relationships.\n\
-                  PATTERN is a case-insensitive substring match on COMM.\n\
-                  Regex-style !prefix patterns are not yet supported.\n\n\
+    about = "ps++ — process memory grouped by parent (TUI and query CLI)",
+    long_about = "pspp ('ps plus plus') groups process memory by parent/child relationships.\n\
+                  Runs the interactive TUI when connected to a terminal with no query flags;\n\
+                  runs one-shot query mode when any query flag/PATTERN is given or stdout is piped.\n\n\
+                  PATTERN is a case-insensitive substring match on COMM (!regex is not yet supported).\n\
                   TOTAL counts every process covered by the listed rows exactly once.\n\
-                  Exit status: 0 rows printed, 1 no matching rows, 2 usage or runtime error."
+                  Exit status (query mode): 0 rows printed, 1 no matching rows, 2 usage or runtime error.",
+    after_long_help = "Examples:\n  \
+                       pspp                              Launch interactive TUI\n  \
+                       pspp --update-ms 1000             Launch TUI with 1s refresh\n  \
+                       pspp --top 10                     Top 10 process subtrees by RSS\n  \
+                       pspp chrome --min 100M            Matching processes >= 100 MiB\n  \
+                       pspp --agg flat --sort own        Direct-children sum sorted by own memory\n  \
+                       pspp --json --top 5 | jq .total   JSON output for scripting"
 )]
 struct Cli {
     #[arg(
@@ -67,22 +78,47 @@ struct Cli {
     #[arg(long, value_name = "PID", help = "Limit to a PID subtree")]
     pid: Option<i32>,
 
-    #[arg(long, value_name = "KIND", value_parser = parse_mem_kind)]
+    #[arg(
+        long,
+        value_name = "KIND",
+        value_parser = parse_mem_kind,
+        help = "Memory metric: rss, vsz, footprint (macOS), pss/uss/swap (Linux)"
+    )]
     mem: Option<MemKind>,
 
-    #[arg(long, value_name = "MODE", value_enum)]
+    #[arg(
+        long,
+        value_name = "MODE",
+        value_enum,
+        help = "Aggregation mode: subtree rollup or direct-children flat sum"
+    )]
     agg: Option<CliAgg>,
 
-    #[arg(long, value_name = "SIZE", value_parser = query::parse_size)]
+    #[arg(
+        long,
+        value_name = "SIZE",
+        value_parser = query::parse_size,
+        help = "Minimum aggregated memory threshold (e.g. 512K, 100M, 1.5G)"
+    )]
     min: Option<u64>,
 
-    #[arg(long, value_name = "FIELD", value_enum)]
+    #[arg(
+        long,
+        value_name = "FIELD",
+        value_enum,
+        help = "Sort rows by aggregated sum, own memory, PID, or COMM"
+    )]
     sort: Option<CliSort>,
 
-    #[arg(long, value_name = "N", value_parser = parse_top)]
+    #[arg(
+        long,
+        value_name = "N",
+        value_parser = parse_top,
+        help = "Limit output to the first N rows after sorting (N >= 1)"
+    )]
     top: Option<usize>,
 
-    #[arg(long)]
+    #[arg(long, help = "Emit JSON ({ rows, total }) with raw byte counts")]
     json: bool,
 
     #[arg(

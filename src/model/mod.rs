@@ -1,3 +1,5 @@
+//! Process tree construction, rollup/flat memory aggregation, sorting, and filtering.
+
 mod tree;
 
 use std::str::FromStr;

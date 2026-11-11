@@ -1,3 +1,5 @@
+//! Non-interactive query execution, size parsing/formatting, and table/JSON rendering.
+
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 

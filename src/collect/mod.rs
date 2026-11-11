@@ -1,3 +1,5 @@
+//! Cross-platform process and memory snapshot collection (macOS and Linux).
+
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
