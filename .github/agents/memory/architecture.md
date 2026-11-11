@@ -42,7 +42,9 @@ src/
                        Esc menu overlay, options editor overlay, scrollable help overlay
     help.rs          — static help content (key tables, mouse actions, memory explanations),
                        wrapped/styled line builder, help scroll clamp helper
-    theme.rs         — named theme colors + 101-step gradients, 256-color fallback
+    theme.rs         — named theme colors + 101-step gradients, 256-color fallback, `TruecolorMode`,
+                       btop `.theme` parser (`ThemeSpec`, `parse_btop_theme`, `discover_themes`, `load_theme_spec`)
+    clock.rs         — strftime top-border clock (`format_clock_at/now`, chrono, validated formats)
     graph.rs         — `History` ring buffer, braille/block/tty graph rendering, ■ meter spans
   config.rs          — config load/save (`$PSPP_CONFIG_DIR/pspp.conf` override else
                        `~/.config/pspp/pspp.conf`), tolerant TOML reader, save_on_exit persistence
@@ -159,14 +161,17 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - Selected button uses double-line border + `hi_fg`; unselected uses single-line + `main_fg`.
 - Options overlay:
   - Settings list: `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`,
-    `save_on_exit`, `sort_key`, `sort_reverse`.
+    `save_on_exit`, `sort_key`, `sort_reverse`, `color_theme`, `theme_background`, `truecolor`,
+    `rounded_corners`, `vim_keys`, `disable_mouse`, `clock_format`, `background_update`, `force_tty`.
   - `update_ms`: Enter-to-edit digit buffer (max 8 digits; `Enter` commit, `Esc` cancel), or `←/→` ±100.
     Clamped to `100..=86_400_000` everywhere (app, config load) so tick deadlines cannot overflow.
   - Other rows: `←/→` cycles/toggles; effects apply live to app rendering/sorting/refresh behavior.
   - Bottom line shows per-option description text.
 - Config schema (`serde` + TOML):
   - `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`, `save_on_exit`,
-    `sort_key`, `sort_reverse`.
+    `sort_key`, `sort_reverse`, plus (M20) `color_theme`, `theme_background`, `truecolor`,
+    `rounded_corners`, `vim_keys`, `disable_mouse`, `clock_format`, `background_update`, `force_tty`.
+  - Options overlay lists all 17 (scrolls); themes dir = `<config dir>/themes` (`config::themes_dir`).
   - `load()` is tolerant: missing file => defaults; unknown keys ignored; invalid values fallback.
   - `save()` creates parent dir and writes TOML with a header comment to `pspp.conf.tmp`, then renames
     over `pspp.conf` (atomic on the same filesystem).

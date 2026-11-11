@@ -268,6 +268,15 @@ fn cli_and_config_to_ui_settings(cli: &Cli, cfg: &config::Config) -> ui::UiSetti
             .map(Into::into)
             .unwrap_or_else(|| ui::parse_sort_config(&cfg.sort_key)),
         sort_reverse: cfg.sort_reverse,
+        color_theme: cfg.color_theme.clone(),
+        theme_background: cfg.theme_background,
+        truecolor: ui::theme::TruecolorMode::from_config(&cfg.truecolor),
+        rounded_corners: cfg.rounded_corners,
+        vim_keys: cfg.vim_keys,
+        disable_mouse: cfg.disable_mouse,
+        clock_format: cfg.clock_format.clone(),
+        background_update: cfg.background_update,
+        force_tty: cfg.force_tty,
     }
 }
 
@@ -301,6 +310,33 @@ fn apply_changed_settings_to_config(
     }
     if current.sort_reverse != initial.sort_reverse {
         cfg.sort_reverse = current.sort_reverse;
+    }
+    if current.color_theme != initial.color_theme {
+        cfg.color_theme = current.color_theme.clone();
+    }
+    if current.theme_background != initial.theme_background {
+        cfg.theme_background = current.theme_background;
+    }
+    if current.truecolor != initial.truecolor {
+        cfg.truecolor = current.truecolor.as_config().to_owned();
+    }
+    if current.rounded_corners != initial.rounded_corners {
+        cfg.rounded_corners = current.rounded_corners;
+    }
+    if current.vim_keys != initial.vim_keys {
+        cfg.vim_keys = current.vim_keys;
+    }
+    if current.disable_mouse != initial.disable_mouse {
+        cfg.disable_mouse = current.disable_mouse;
+    }
+    if current.clock_format != initial.clock_format {
+        cfg.clock_format = current.clock_format.clone();
+    }
+    if current.background_update != initial.background_update {
+        cfg.background_update = current.background_update;
+    }
+    if current.force_tty != initial.force_tty {
+        cfg.force_tty = current.force_tty;
     }
     cfg.save_on_exit = current.save_on_exit;
 }
@@ -437,5 +473,36 @@ mod tests {
         assert_eq!(cfg.agg_mode, "flat");
         assert_eq!(cfg.mem_kind, "rss", "CLI --mem must not be saved");
         assert_eq!(cfg.update_ms, 2_000, "CLI --update-ms must not be saved");
+    }
+
+    #[test]
+    fn save_persists_changed_general_options_only() {
+        let mut cfg = config::Config::default();
+        let initial = ui::UiSettings::default();
+        let current = ui::UiSettings {
+            color_theme: "Nord".into(),
+            theme_background: false,
+            truecolor: ui::theme::TruecolorMode::Off,
+            rounded_corners: false,
+            vim_keys: false,
+            disable_mouse: true,
+            clock_format: "%X".into(),
+            background_update: false,
+            force_tty: true,
+            ..initial.clone()
+        };
+        apply_changed_settings_to_config(&mut cfg, &initial, &current);
+        assert_eq!(cfg.color_theme, "Nord");
+        assert!(!cfg.theme_background && !cfg.rounded_corners && !cfg.vim_keys);
+        assert_eq!(cfg.truecolor, "off");
+        assert!(cfg.disable_mouse && cfg.force_tty && !cfg.background_update);
+        assert_eq!(cfg.clock_format, "%X");
+        // Untouched fields keep the on-disk values.
+        assert_eq!(cfg.mem_kind, "rss");
+
+        let settings = cli_and_config_to_ui_settings(&parse(&[]), &cfg);
+        assert_eq!(settings.color_theme, "Nord");
+        assert_eq!(settings.truecolor, ui::theme::TruecolorMode::Off);
+        assert!(!settings.vim_keys && settings.force_tty);
     }
 }

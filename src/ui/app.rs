@@ -8,10 +8,12 @@ use crossterm::event::{
 use ratatui::layout::Rect;
 
 use crate::collect::{self, Snapshot};
+use crate::config;
 use crate::model::{AggMode, AggregateRow, MemKind, ProcTree, SortBy, VisibleRow};
+use crate::ui::clock;
 use crate::ui::graph::{GraphSymbols, History};
 use crate::ui::help;
-use crate::ui::theme::Theme;
+use crate::ui::theme::{self, Theme, TruecolorMode};
 
 pub const DEFAULT_UPDATE_MS: u64 = 2_000;
 pub const MIN_UPDATE_MS: u64 = 100;
@@ -22,7 +24,7 @@ const MOUSE_SCROLL_STEP: isize = 3;
 const DOUBLE_CLICK_MS: u64 = 350;
 const SORT_ORDER: [SortBy; 4] = [SortBy::Aggregated, SortBy::Own, SortBy::Pid, SortBy::Comm];
 const MENU_BUTTONS: [MenuButton; 3] = [MenuButton::Options, MenuButton::Help, MenuButton::Quit];
-const OPTION_KEYS: [OptionKey; 8] = [
+const OPTION_KEYS: [OptionKey; 17] = [
     OptionKey::UpdateMs,
     OptionKey::MemKind,
     OptionKey::AggMode,
@@ -31,6 +33,15 @@ const OPTION_KEYS: [OptionKey; 8] = [
     OptionKey::SaveOnExit,
     OptionKey::SortKey,
     OptionKey::SortReverse,
+    OptionKey::ColorTheme,
+    OptionKey::ThemeBackground,
+    OptionKey::Truecolor,
+    OptionKey::RoundedCorners,
+    OptionKey::VimKeys,
+    OptionKey::DisableMouse,
+    OptionKey::ClockFormat,
+    OptionKey::BackgroundUpdate,
+    OptionKey::ForceTty,
 ];
 
 pub fn clamp_update_ms(update_ms: u64) -> u64 {
@@ -112,9 +123,9 @@ impl GraphSymbolSetting {
         self.as_config()
     }
 
-    pub fn resolve(self) -> GraphSymbols {
+    pub fn resolve(self, force_tty: bool) -> GraphSymbols {
         match self {
-            Self::Auto => GraphSymbols::detect(),
+            Self::Auto => GraphSymbols::detect(force_tty),
             Self::Braille => GraphSymbols::Braille,
             Self::Block => GraphSymbols::Block,
             Self::Tty => GraphSymbols::Tty,
@@ -144,6 +155,15 @@ pub enum OptionKey {
     SaveOnExit,
     SortKey,
     SortReverse,
+    ColorTheme,
+    ThemeBackground,
+    Truecolor,
+    RoundedCorners,
+    VimKeys,
+    DisableMouse,
+    ClockFormat,
+    BackgroundUpdate,
+    ForceTty,
 }
 
 impl OptionKey {
@@ -157,6 +177,15 @@ impl OptionKey {
             Self::SaveOnExit => "save_on_exit",
             Self::SortKey => "sort_key",
             Self::SortReverse => "sort_reverse",
+            Self::ColorTheme => "color_theme",
+            Self::ThemeBackground => "theme_background",
+            Self::Truecolor => "truecolor",
+            Self::RoundedCorners => "rounded_corners",
+            Self::VimKeys => "vim_keys",
+            Self::DisableMouse => "disable_mouse",
+            Self::ClockFormat => "clock_format",
+            Self::BackgroundUpdate => "background_update",
+            Self::ForceTty => "force_tty",
         }
     }
 
@@ -172,6 +201,27 @@ impl OptionKey {
             Self::SaveOnExit => "Persist current options to pspp.conf when leaving TUI.",
             Self::SortKey => "Primary sort key inside each tree sibling group.",
             Self::SortReverse => "Sort direction: true = descending, false = ascending.",
+            Self::ColorTheme => {
+                "Theme: Default or a btop .theme file from <config dir>/themes (←/→ cycles)."
+            }
+            Self::ThemeBackground => {
+                "Paint the theme's background colour (off keeps the terminal's)."
+            }
+            Self::Truecolor => {
+                "24-bit colour: auto follows COLORTERM; off uses the 256-colour palette."
+            }
+            Self::RoundedCorners => "Rounded (╭╮╰╯) or square box corners.",
+            Self::VimKeys => {
+                "j/k/l/g/G navigate like vim. Off makes them inert (h always opens Help)."
+            }
+            Self::DisableMouse => "Stop capturing the mouse so the terminal's own selection works.",
+            Self::ClockFormat => {
+                "strftime text shown in the top border, e.g. %H:%M:%S. Empty hides the clock."
+            }
+            Self::BackgroundUpdate => {
+                "Keep refreshing while Menu/Options/Help is open (off pauses)."
+            }
+            Self::ForceTty => "Force the tty graph glyphs even when the terminal supports braille.",
         }
     }
 }
@@ -186,6 +236,15 @@ pub struct UiSettings {
     pub save_on_exit: bool,
     pub sort_by: SortBy,
     pub sort_reverse: bool,
+    pub color_theme: String,
+    pub theme_background: bool,
+    pub truecolor: TruecolorMode,
+    pub rounded_corners: bool,
+    pub vim_keys: bool,
+    pub disable_mouse: bool,
+    pub clock_format: String,
+    pub background_update: bool,
+    pub force_tty: bool,
 }
 
 impl Default for UiSettings {
@@ -199,6 +258,15 @@ impl Default for UiSettings {
             save_on_exit: true,
             sort_by: SortBy::Aggregated,
             sort_reverse: true,
+            color_theme: config::DEFAULT_THEME_NAME.to_owned(),
+            theme_background: true,
+            truecolor: TruecolorMode::Auto,
+            rounded_corners: true,
+            vim_keys: true,
+            disable_mouse: false,
+            clock_format: String::new(),
+            background_update: true,
+            force_tty: false,
         }
     }
 }
@@ -229,6 +297,15 @@ pub struct App {
     pub theme: Theme,
     pub mem_history: History,
     pub graph_symbol: GraphSymbolSetting,
+    pub color_theme: String,
+    pub theme_background: bool,
+    pub truecolor: TruecolorMode,
+    pub rounded_corners: bool,
+    pub vim_keys: bool,
+    pub disable_mouse: bool,
+    pub clock_format: String,
+    pub background_update: bool,
+    pub force_tty: bool,
     pub mode: AppMode,
     pub should_quit: bool,
     pub last_tick_at: Instant,
@@ -254,9 +331,12 @@ pub struct App {
     menu_button_rects: [Option<Rect>; 3],
 
     option_selected: usize,
+    option_scroll: usize,
     update_ms_editor: Option<String>,
+    clock_editor: Option<String>,
+    overlay_parent: AppMode,
     option_overlay_rect: Option<Rect>,
-    option_row_rects: Vec<Rect>,
+    option_row_rects: Vec<(Rect, usize)>,
     help_overlay_rect: Option<Rect>,
 
     help_scroll: usize,
@@ -300,7 +380,16 @@ impl App {
             update_ms,
             base10: settings.base10,
             save_on_exit: settings.save_on_exit,
-            theme: Theme::detect(),
+            theme: Theme::new(false),
+            color_theme: settings.color_theme.clone(),
+            theme_background: settings.theme_background,
+            truecolor: settings.truecolor,
+            rounded_corners: settings.rounded_corners,
+            vim_keys: settings.vim_keys,
+            disable_mouse: settings.disable_mouse,
+            clock_format: settings.clock_format.clone(),
+            background_update: settings.background_update,
+            force_tty: settings.force_tty,
             mem_history: History::default(),
             graph_symbol: settings.graph_symbol,
             mode: AppMode::Normal,
@@ -324,7 +413,10 @@ impl App {
             menu_overlay_rect: None,
             menu_button_rects: [None, None, None],
             option_selected: 0,
+            option_scroll: 0,
             update_ms_editor: None,
+            clock_editor: None,
+            overlay_parent: AppMode::Menu,
             option_overlay_rect: None,
             option_row_rects: Vec::new(),
             help_overlay_rect: None,
@@ -336,9 +428,47 @@ impl App {
             filter_visible: HashSet::new(),
             filter_direct: HashSet::new(),
         };
+        app.rebuild_theme();
         app.record_mem_sample();
         app.rebuild_rows();
         app
+    }
+
+    /// Rebuilds the colour theme from `color_theme`, `truecolor` and `theme_background`.
+    fn rebuild_theme(&mut self) {
+        self.rebuild_theme_in(config::themes_dir().as_deref());
+    }
+
+    fn rebuild_theme_in(&mut self, dir: Option<&std::path::Path>) {
+        let truecolor = self
+            .truecolor
+            .resolve(std::env::var("COLORTERM").ok().as_deref());
+        let spec = theme::load_theme_spec(dir, &self.color_theme);
+        self.theme = Theme::build(truecolor, self.theme_background, spec.as_ref());
+    }
+
+    pub fn border_type(&self) -> ratatui::widgets::BorderType {
+        if self.rounded_corners {
+            ratatui::widgets::BorderType::Rounded
+        } else {
+            ratatui::widgets::BorderType::Plain
+        }
+    }
+
+    /// Clock text for the top border, or `None` when disabled/invalid.
+    pub fn clock_text(&self) -> Option<String> {
+        clock::format_clock_now(&self.clock_format)
+    }
+
+    /// Whether the terminal should capture mouse events.
+    pub fn mouse_enabled(&self) -> bool {
+        !self.disable_mouse
+    }
+
+    /// Ticks pause while an overlay is open when `background_update` is off.
+    fn ticks_paused(&self) -> bool {
+        !self.background_update
+            && matches!(self.mode, AppMode::Menu | AppMode::Options | AppMode::Help)
     }
 
     pub fn ui_settings(&self) -> UiSettings {
@@ -351,11 +481,20 @@ impl App {
             save_on_exit: self.save_on_exit,
             sort_by: self.sort_by,
             sort_reverse: self.sort_desc,
+            color_theme: self.color_theme.clone(),
+            theme_background: self.theme_background,
+            truecolor: self.truecolor,
+            rounded_corners: self.rounded_corners,
+            vim_keys: self.vim_keys,
+            disable_mouse: self.disable_mouse,
+            clock_format: self.clock_format.clone(),
+            background_update: self.background_update,
+            force_tty: self.force_tty,
         }
     }
 
     pub fn resolved_graph_symbols(&self) -> GraphSymbols {
-        self.graph_symbol.resolve()
+        self.graph_symbol.resolve(self.force_tty)
     }
 
     /// Σ of the selected memory kind over all processes. This can exceed physical RAM (shared
@@ -393,6 +532,20 @@ impl App {
 
     pub fn option_selected_index(&self) -> usize {
         self.option_selected
+    }
+
+    /// First option shown in the (scrolling) options list, adjusted so the selection is visible.
+    pub fn option_scroll_for(&mut self, visible_rows: usize) -> usize {
+        let visible = visible_rows.max(1);
+        if self.option_selected < self.option_scroll {
+            self.option_scroll = self.option_selected;
+        } else if self.option_selected >= self.option_scroll + visible {
+            self.option_scroll = self.option_selected + 1 - visible;
+        }
+        self.option_scroll = self
+            .option_scroll
+            .min(OPTION_KEYS.len().saturating_sub(visible));
+        self.option_scroll
     }
 
     pub fn selected_option_key(&self) -> OptionKey {
@@ -465,6 +618,21 @@ impl App {
             OptionKey::SaveOnExit => bool_label(self.save_on_exit).to_owned(),
             OptionKey::SortKey => sort_to_config(self.sort_by).to_owned(),
             OptionKey::SortReverse => bool_label(self.sort_desc).to_owned(),
+            OptionKey::ColorTheme => self.color_theme.clone(),
+            OptionKey::ThemeBackground => bool_label(self.theme_background).to_owned(),
+            OptionKey::Truecolor => self.truecolor.as_config().to_owned(),
+            OptionKey::RoundedCorners => bool_label(self.rounded_corners).to_owned(),
+            OptionKey::VimKeys => bool_label(self.vim_keys).to_owned(),
+            OptionKey::DisableMouse => bool_label(self.disable_mouse).to_owned(),
+            OptionKey::ClockFormat => match &self.clock_editor {
+                Some(buffer) if self.selected_option_key() == OptionKey::ClockFormat => {
+                    format!("{buffer}_")
+                }
+                _ if self.clock_format.is_empty() => "(off)".to_owned(),
+                _ => self.clock_format.clone(),
+            },
+            OptionKey::BackgroundUpdate => bool_label(self.background_update).to_owned(),
+            OptionKey::ForceTty => bool_label(self.force_tty).to_owned(),
         }
     }
 
@@ -473,11 +641,21 @@ impl App {
     }
 
     pub fn poll_timeout(&self, now: Instant) -> Duration {
-        remaining_until_tick(now, self.next_tick_at)
+        let tick_wait = if self.ticks_paused() {
+            // Paused: still wake periodically so the clock and redraws stay live.
+            Duration::from_millis(250)
+        } else {
+            remaining_until_tick(now, self.next_tick_at)
+        };
+        if clock::needs_second_resolution(&self.clock_format) {
+            tick_wait.min(Duration::from_secs(1))
+        } else {
+            tick_wait
+        }
     }
 
     pub fn should_tick(&self, now: Instant) -> bool {
-        now >= self.next_tick_at
+        !self.ticks_paused() && now >= self.next_tick_at
     }
 
     pub fn on_tick(&mut self) {
@@ -517,6 +695,23 @@ impl App {
             return;
         }
 
+        // F1/F2 open Help/Options from anywhere except while typing text.
+        if !self.is_text_input_active() {
+            match key_event.code {
+                KeyCode::F(1) => return self.open_overlay(AppMode::Help),
+                KeyCode::F(2) => return self.open_overlay(AppMode::Options),
+                _ => {}
+            }
+        }
+
+        if !self.vim_keys
+            && !self.is_text_input_active()
+            && key_event.modifiers.is_empty()
+            && matches!(key_event.code, KeyCode::Char('j' | 'k' | 'l' | 'g' | 'G'))
+        {
+            return;
+        }
+
         match self.mode {
             AppMode::Normal => self.on_key_normal(key_event),
             AppMode::FilterInput => self.on_key_filter_input(key_event),
@@ -527,6 +722,9 @@ impl App {
     }
 
     pub fn on_mouse(&mut self, mouse_event: MouseEvent) {
+        if self.disable_mouse {
+            return;
+        }
         self.last_mouse_position = Some((mouse_event.column, mouse_event.row));
 
         match self.mode {
@@ -558,6 +756,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 // Any click abandons an in-progress update_ms edit.
                 self.update_ms_editor = None;
+                self.clock_editor = None;
                 let (column, row) = (mouse_event.column, mouse_event.row);
                 let Some(overlay) = self.option_overlay_rect else {
                     return;
@@ -569,7 +768,8 @@ impl App {
                 let hit = self
                     .option_row_rects
                     .iter()
-                    .position(|rect| point_in_rect(*rect, column, row));
+                    .find(|(rect, _)| point_in_rect(*rect, column, row))
+                    .map(|(_, idx)| *idx);
                 if let Some(idx) = hit {
                     if idx == self.option_selected {
                         self.activate_selected_option();
@@ -604,14 +804,14 @@ impl App {
 
     /// Enter / click-on-selected: edit `update_ms`, otherwise advance the value.
     fn activate_selected_option(&mut self) {
-        if self.selected_option_key() == OptionKey::UpdateMs {
-            self.update_ms_editor = Some(self.update_ms.to_string());
-        } else {
-            self.adjust_selected_option(1);
+        match self.selected_option_key() {
+            OptionKey::UpdateMs => self.update_ms_editor = Some(self.update_ms.to_string()),
+            OptionKey::ClockFormat => self.clock_editor = Some(self.clock_format.clone()),
+            _ => self.adjust_selected_option(1),
         }
     }
 
-    pub fn set_options_hit_test(&mut self, overlay: Rect, rows: Vec<Rect>) {
+    pub fn set_options_hit_test(&mut self, overlay: Rect, rows: Vec<(Rect, usize)>) {
         self.option_overlay_rect = Some(overlay);
         self.option_row_rects = rows;
     }
@@ -691,9 +891,41 @@ impl App {
         self.menu_button_rects = [None, None, None];
     }
 
+    /// True while a text field (filter or an options editor) is consuming characters.
+    fn is_text_input_active(&self) -> bool {
+        self.mode == AppMode::FilterInput
+            || self.update_ms_editor.is_some()
+            || self.clock_editor.is_some()
+    }
+
+    /// Opens Help/Options directly (global keys, menu buttons). Esc returns to where it came from.
+    fn open_overlay(&mut self, target: AppMode) {
+        self.update_ms_editor = None;
+        self.clock_editor = None;
+        self.overlay_parent = if self.mode == AppMode::Menu {
+            AppMode::Menu
+        } else {
+            AppMode::Normal
+        };
+        if target == AppMode::Help {
+            self.help_scroll = 0;
+        }
+        self.mode = target;
+    }
+
+    fn close_overlay(&mut self) {
+        self.mode = self.overlay_parent;
+        self.overlay_parent = AppMode::Menu;
+    }
+
     fn on_key_normal(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => self.open_menu(),
+            KeyCode::Char('h' | 'H' | '?') => self.open_overlay(AppMode::Help),
+            KeyCode::Char('o' | 'O') => self.open_overlay(AppMode::Options),
+            KeyCode::Char('+' | '=') => self.set_update_ms(self.update_ms.saturating_add(100)),
+            KeyCode::Char('-' | '_') => self.set_update_ms(self.update_ms.saturating_sub(100)),
+            KeyCode::Char('l') => self.expand_selected(),
             KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('/') => {
                 self.enter_filter_input();
             }
@@ -759,14 +991,44 @@ impl App {
             self.on_key_options_editing_update_ms(key_event);
             return;
         }
+        if self.clock_editor.is_some() {
+            self.on_key_options_editing_clock(key_event);
+            return;
+        }
 
         match key_event.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.mode = AppMode::Menu,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.close_overlay(),
             KeyCode::Up | KeyCode::Char('k') => self.move_option_selection(-1),
             KeyCode::Down | KeyCode::Char('j') => self.move_option_selection(1),
             KeyCode::Left => self.adjust_selected_option(-1),
             KeyCode::Right => self.adjust_selected_option(1),
             KeyCode::Enter => self.activate_selected_option(),
+            _ => {}
+        }
+    }
+
+    fn on_key_options_editing_clock(&mut self, key_event: KeyEvent) {
+        let Some(editor) = self.clock_editor.as_mut() else {
+            return;
+        };
+
+        match key_event.code {
+            KeyCode::Esc => self.clock_editor = None,
+            KeyCode::Enter => {
+                if let Some(text) = self.clock_editor.take() {
+                    self.clock_format = text;
+                }
+            }
+            KeyCode::Backspace => {
+                editor.pop();
+            }
+            KeyCode::Char(ch)
+                if !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    && !ch.is_control()
+                    && editor.chars().count() < 40 =>
+            {
+                editor.push(ch);
+            }
             _ => {}
         }
     }
@@ -783,6 +1045,7 @@ impl App {
                     self.set_update_ms(parsed);
                 }
                 self.update_ms_editor = None;
+                self.clock_editor = None;
             }
             KeyCode::Backspace => {
                 editor.pop();
@@ -800,7 +1063,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_help_scroll_by(1),
             KeyCode::PageUp => self.move_help_scroll_by(-(self.help_page_step() as isize)),
             KeyCode::PageDown => self.move_help_scroll_by(self.help_page_step() as isize),
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.mode = AppMode::Menu,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.close_overlay(),
             _ => {}
         }
     }
@@ -808,6 +1071,7 @@ impl App {
     fn open_menu(&mut self) {
         self.mode = AppMode::Menu;
         self.update_ms_editor = None;
+        self.clock_editor = None;
     }
 
     fn move_menu_selection(&mut self, delta: isize) {
@@ -820,15 +1084,8 @@ impl App {
 
     fn activate_menu_button(&mut self, button: MenuButton) {
         match button {
-            MenuButton::Options => {
-                self.mode = AppMode::Options;
-                self.update_ms_editor = None;
-            }
-            MenuButton::Help => {
-                self.mode = AppMode::Help;
-                self.update_ms_editor = None;
-                self.help_scroll = 0;
-            }
+            MenuButton::Options => self.open_overlay(AppMode::Options),
+            MenuButton::Help => self.open_overlay(AppMode::Help),
             MenuButton::Quit => self.should_quit = true,
         }
     }
@@ -867,7 +1124,41 @@ impl App {
             }
             OptionKey::SortKey => self.cycle_sort_key(delta),
             OptionKey::SortReverse => self.reverse_sort(),
+            OptionKey::ColorTheme => self.cycle_color_theme(delta),
+            OptionKey::ThemeBackground => {
+                self.theme_background = !self.theme_background;
+                self.rebuild_theme();
+            }
+            OptionKey::Truecolor => {
+                self.truecolor = self.truecolor.cycle(delta);
+                self.rebuild_theme();
+            }
+            OptionKey::RoundedCorners => self.rounded_corners = !self.rounded_corners,
+            OptionKey::VimKeys => self.vim_keys = !self.vim_keys,
+            OptionKey::DisableMouse => self.disable_mouse = !self.disable_mouse,
+            // Free text: only editable via Enter/click, never cycled.
+            OptionKey::ClockFormat => {}
+            OptionKey::BackgroundUpdate => self.background_update = !self.background_update,
+            OptionKey::ForceTty => self.force_tty = !self.force_tty,
         }
+    }
+
+    fn cycle_color_theme(&mut self, delta: isize) {
+        self.cycle_color_theme_in(config::themes_dir().as_deref(), delta);
+    }
+
+    fn cycle_color_theme_in(&mut self, dir: Option<&std::path::Path>, delta: isize) {
+        let mut names = theme::discover_themes(dir);
+        // Keep a configured-but-missing theme selectable so cycling never loses the position.
+        if !names.contains(&self.color_theme) {
+            names.push(self.color_theme.clone());
+        }
+        let current = names
+            .iter()
+            .position(|name| *name == self.color_theme)
+            .unwrap_or(0);
+        self.color_theme = names[cycle_index(current, names.len(), delta)].clone();
+        self.rebuild_theme_in(dir);
     }
 
     fn set_update_ms(&mut self, value: u64) {
@@ -1440,7 +1731,7 @@ mod tests {
     use super::{
         build_tree_prefix, clamp_cursor_scroll, clamp_update_ms, cycle_index, cycle_mem_kind_value,
         cycle_sort_key_value, next_tick_deadline, relocate_cursor_to_selected, App, AppMode,
-        DisplayRow, GraphSymbolSetting, MAX_UPDATE_MS, MIN_UPDATE_MS,
+        DisplayRow, GraphSymbolSetting, OptionKey, MAX_UPDATE_MS, MIN_UPDATE_MS, OPTION_KEYS,
     };
     use crate::collect::{MemSet, ProcRec, Snapshot};
     use crate::model::{MemKind, SortBy};
@@ -1763,7 +2054,9 @@ mod tests {
     fn options_app() -> App {
         let mut app = filter_app();
         app.mode = AppMode::Options;
-        let rows = (0..8).map(|i| Rect::new(10, 4 + i, 40, 1)).collect();
+        let rows = (0..8)
+            .map(|i| (Rect::new(10, 4 + i, 40, 1), usize::from(i)))
+            .collect();
         app.set_options_hit_test(Rect::new(8, 2, 44, 14), rows);
         app
     }
@@ -1793,11 +2086,11 @@ mod tests {
         // Wheel moves the selection and clamps at both ends.
         wheel(&mut app, MouseEventKind::ScrollDown);
         assert_eq!(app.option_selected, 2);
-        for _ in 0..20 {
+        for _ in 0..30 {
             wheel(&mut app, MouseEventKind::ScrollDown);
         }
-        assert_eq!(app.option_selected, 7);
-        for _ in 0..20 {
+        assert_eq!(app.option_selected, 16);
+        for _ in 0..30 {
             wheel(&mut app, MouseEventKind::ScrollUp);
         }
         assert_eq!(app.option_selected, 0);
@@ -1828,5 +2121,238 @@ mod tests {
         assert_eq!(app.mode, AppMode::Help);
         click(&mut app, 0, 0); // outside: closes
         assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    fn plain_press(app: &mut App, ch: char) {
+        press(app, KeyCode::Char(ch));
+    }
+
+    #[test]
+    fn new_settings_round_trip_through_the_app() {
+        let settings = UiSettings {
+            color_theme: "Nord".into(),
+            theme_background: false,
+            truecolor: crate::ui::theme::TruecolorMode::Off,
+            rounded_corners: false,
+            vim_keys: false,
+            disable_mouse: true,
+            clock_format: "%H:%M".into(),
+            background_update: false,
+            force_tty: true,
+            ..UiSettings::default()
+        };
+        let app = App::with_snapshot(
+            Snapshot {
+                procs: Vec::new(),
+                total_mem: 1,
+                used_mem: 0,
+                taken_at: Instant::now(),
+            },
+            settings.clone(),
+        );
+        assert_eq!(app.ui_settings(), settings);
+        assert!(!app.mouse_enabled());
+        assert_eq!(app.border_type(), ratatui::widgets::BorderType::Plain);
+    }
+
+    #[test]
+    fn global_keys_open_overlays_and_adjust_update_interval() {
+        let mut app = filter_app();
+        let base = app.update_ms;
+        plain_press(&mut app, '+');
+        assert_eq!(app.update_ms, base + 100);
+        plain_press(&mut app, '-');
+        plain_press(&mut app, '-');
+        assert_eq!(app.update_ms, base - 100);
+        for _ in 0..100 {
+            plain_press(&mut app, '-');
+        }
+        assert_eq!(app.update_ms, MIN_UPDATE_MS);
+
+        for key in [KeyCode::F(1), KeyCode::Char('?'), KeyCode::Char('h')] {
+            press(&mut app, key);
+            assert_eq!(app.mode, AppMode::Help, "{key:?}");
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(
+                app.mode,
+                AppMode::Normal,
+                "Esc returns where Help was opened from"
+            );
+        }
+        for key in [KeyCode::F(2), KeyCode::Char('o')] {
+            press(&mut app, key);
+            assert_eq!(app.mode, AppMode::Options, "{key:?}");
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.mode, AppMode::Normal);
+        }
+
+        // Opened through the menu, Esc still steps back to the menu.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Menu);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, AppMode::Options);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Menu);
+    }
+
+    #[test]
+    fn global_letter_keys_are_text_while_filtering() {
+        let mut app = filter_app();
+        press(&mut app, KeyCode::Char('f'));
+        type_text(&mut app, "oh+-?");
+        assert_eq!(app.mode, AppMode::FilterInput);
+        assert_eq!(app.filter_input, "oh+-?");
+        // F1 is not text, but still must not hijack typing mode.
+        press(&mut app, KeyCode::F(1));
+        assert_eq!(app.mode, AppMode::FilterInput);
+    }
+
+    #[test]
+    fn vim_keys_off_makes_jklgg_inert_but_arrows_and_help_work() {
+        let mut app = filter_app();
+        let before = app.cursor();
+        plain_press(&mut app, 'j');
+        assert_eq!(app.cursor(), before + 1, "vim_keys on by default");
+        plain_press(&mut app, 'g');
+        assert_eq!(app.cursor(), 0);
+
+        app.vim_keys = false;
+        for ch in ['j', 'k', 'l', 'g', 'G'] {
+            plain_press(&mut app, ch);
+            assert_eq!(app.cursor(), 0, "{ch} must be inert");
+            assert_eq!(app.mode, AppMode::Normal);
+        }
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.cursor(), 1);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.cursor(), app.rows().len() - 1);
+        plain_press(&mut app, 'h');
+        assert_eq!(app.mode, AppMode::Help, "h always opens help");
+    }
+
+    #[test]
+    fn vim_l_expands_the_selected_node() {
+        let mut app = filter_app();
+        app.expanded.clear();
+        app.rebuild_rows();
+        assert_eq!(pids(&app), vec![1, 5]);
+        plain_press(&mut app, 'l');
+        assert_eq!(pids(&app), vec![1, 2, 4, 5]);
+    }
+
+    #[test]
+    fn background_update_off_pauses_ticks_while_an_overlay_is_open() {
+        let mut app = filter_app();
+        app.background_update = false;
+        app.next_tick_at = Instant::now() - Duration::from_secs(1);
+        assert!(app.should_tick(Instant::now()));
+        for mode in [AppMode::Menu, AppMode::Options, AppMode::Help] {
+            app.mode = mode;
+            assert!(!app.should_tick(Instant::now()), "{mode:?}");
+            assert!(app.poll_timeout(Instant::now()) <= Duration::from_millis(250));
+        }
+        app.background_update = true;
+        app.mode = AppMode::Options;
+        assert!(app.should_tick(Instant::now()));
+    }
+
+    #[test]
+    fn disable_mouse_ignores_mouse_events() {
+        let mut app = filter_app();
+        app.mode = AppMode::Help;
+        app.set_help_hit_test(Rect::new(4, 2, 60, 20));
+        app.disable_mouse = true;
+        click(&mut app, 0, 0);
+        assert_eq!(app.mode, AppMode::Help);
+        assert!(!app.mouse_enabled());
+    }
+
+    #[test]
+    fn clock_format_option_is_edited_in_a_text_field() {
+        let mut app = filter_app();
+        press(&mut app, KeyCode::Char('o'));
+        app.option_selected = OPTION_KEYS
+            .iter()
+            .position(|key| *key == OptionKey::ClockFormat)
+            .expect("clock option");
+        assert_eq!(app.option_value(OptionKey::ClockFormat), "(off)");
+
+        press(&mut app, KeyCode::Enter);
+        assert!(app.clock_editor.is_some());
+        // j/k/h/o are text here, even though they are navigation keys elsewhere.
+        type_text(&mut app, "%H:%M jkho");
+        assert_eq!(app.mode, AppMode::Options);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.clock_format, "%H:%M jkho");
+
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.clock_format, "%H:%M jkho", "Esc cancels the edit");
+        assert!(app.clock_editor.is_none());
+        assert_eq!(app.mode, AppMode::Options, "Esc only closes the editor");
+    }
+
+    #[test]
+    fn toggle_options_apply_live() {
+        let mut app = filter_app();
+        app.mode = AppMode::Options;
+        for key in [
+            OptionKey::ThemeBackground,
+            OptionKey::RoundedCorners,
+            OptionKey::VimKeys,
+            OptionKey::DisableMouse,
+            OptionKey::BackgroundUpdate,
+            OptionKey::ForceTty,
+        ] {
+            app.option_selected = OPTION_KEYS.iter().position(|k| *k == key).expect("option");
+            let before = app.option_value(key);
+            press(&mut app, KeyCode::Right);
+            assert_ne!(app.option_value(key), before, "{key:?}");
+            press(&mut app, KeyCode::Left);
+            assert_eq!(app.option_value(key), before, "{key:?}");
+        }
+        app.option_selected = OPTION_KEYS
+            .iter()
+            .position(|k| *k == OptionKey::Truecolor)
+            .expect("option");
+        press(&mut app, KeyCode::Right);
+        assert_eq!(app.truecolor, crate::ui::theme::TruecolorMode::On);
+    }
+
+    #[test]
+    fn color_theme_cycles_discovered_files_and_applies_them() {
+        let dir = std::env::temp_dir().join(format!("pspp-app-themes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join("Mono.theme"), "theme[main_fg]=\"#ffffff\"\n").expect("write");
+
+        let mut app = filter_app();
+        app.truecolor = crate::ui::theme::TruecolorMode::On;
+        app.cycle_color_theme_in(Some(&dir), 1);
+        assert_eq!(app.color_theme, "Mono");
+        assert_eq!(app.theme.main_fg, crate::ui::theme::Rgb(255, 255, 255));
+        app.cycle_color_theme_in(Some(&dir), 1);
+        assert_eq!(app.color_theme, "Default");
+        assert_ne!(app.theme.main_fg, crate::ui::theme::Rgb(255, 255, 255));
+
+        // A configured theme whose file vanished stays selectable and falls back to Default colours.
+        app.color_theme = "Gone".into();
+        app.cycle_color_theme_in(Some(&dir), 0);
+        assert_eq!(app.color_theme, "Gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn options_list_scrolls_to_keep_the_selection_visible() {
+        let mut app = filter_app();
+        assert_eq!(app.option_scroll_for(5), 0);
+        app.option_selected = 9;
+        assert_eq!(app.option_scroll_for(5), 5);
+        app.option_selected = 2;
+        assert_eq!(app.option_scroll_for(5), 2);
+        app.option_selected = 16;
+        assert_eq!(app.option_scroll_for(5), 12);
+        assert_eq!(app.option_scroll_for(100), 0, "everything fits");
     }
 }

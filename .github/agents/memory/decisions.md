@@ -94,3 +94,31 @@ Per-agent models set in profile frontmatter:
   the menu (dismiss gesture = leave overlays entirely).
 - **Hint bar** is chosen by `AppMode` and drops whole segments that do not fit the width (never wraps).
 - Help reserves its right column for a `ratatui::widgets::Scrollbar`, drawn only when the text overflows.
+
+## 2026-11-11 — M20 (user answered the open questions: keep `m`; load btop themes)
+
+- **`m` stays "cycle memory kind"; the menu stays on `Esc`.** Deviation from btop (where `m` = menu) is
+  noted in help, README and man page. *User confirmed.*
+- **`color_theme` loads btop `.theme` files** from `<config dir>/themes` (`$PSPP_CONFIG_DIR/themes` when
+  set). `Default` is built in. Parsed tolerantly (`#RRGGBB`, `#RR`, `R G B`); recognised keys: main_bg,
+  main_fg, title, hi_fg, selected_bg, selected_fg, inactive_fg, meter_bg, div_line and the usage gradient
+  `cpu_start/mid/end` (btop's green→red usage gradient); everything else is ignored. Theme names are
+  validated (no path separators, no leading dot) because they become file names. *User confirmed.*
+- **`h` always opens Help.** The brief lists `h` as a global Help key and also says `vim_keys` off makes
+  `h` inert; those conflict. Resolution: `h` = Help regardless; `vim_keys` governs `j/k/l/g/G`
+  (new: `l` expands). `vim_keys` defaults to **true** to keep the existing j/k/g/G behaviour (btop's
+  default is false).
+- **`theme_background` defaults to true** (btop) — no visible change with the Default theme, whose
+  `main_bg` is unset; loaded themes paint their `main_bg` unless it is turned off.
+- **`graph_symbol = auto`** → `tty` when `force_tty` or the terminal lacks colour: `TERM` of `linux`/`dumb`,
+  or a `TERM` without "color" **and** no `COLORTERM`. The COLORTERM exception keeps alacritty/kitty/wezterm
+  on braille. Unset `TERM` counts as colour-capable.
+- **Overlay navigation**: Help/Options opened via a global key (`h ? F1 o F2`) return to the main view on
+  Esc; opened through the menu they return to the menu (`overlay_parent`). F1/F2 work in every mode except
+  while typing in a text field; `+`/`-`/`h`/`o` are Normal-mode keys (plain text while filtering/editing).
+- **`background_update = false`** pauses ticks while Menu/Options/Help is open (FilterInput keeps updating);
+  the loop still wakes every 250 ms. A clock with seconds caps the poll timeout at 1 s.
+- **`disable_mouse`** drops mouse capture live (loop syncs it each iteration) and ignores mouse events.
+- **`clock_format`** uses `chrono` (clock+std features only), validated with `StrftimeItems` so bad
+  specifiers render nothing instead of panicking. Default is empty (off).
+- Options list grew to 17 rows and now scrolls (with a scrollbar); hit rects carry the option index.

@@ -55,9 +55,12 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 
 | Key | Action |
 |---|---|
-| `↑/↓, j/k` | Move selection one row. |
+| `↑/↓, j/k` | Move selection one row (`j/k` need `vim_keys`). |
 | `PgUp/PgDn` | Move by one page. |
-| `Home/End, g/G` | Jump to first/last row. |
+| `Home/End, g/G` | Jump to first/last row (`g/G` need `vim_keys`). |
+| `h`, `?`, `F1` | Open Help (`h` always opens Help, even with `vim_keys` off). |
+| `o`, `F2` | Open Options. |
+| `+` / `-` | Increase / decrease the refresh interval by 100 ms. |
 | `q/Q, Ctrl-C, Ctrl-Q` | Quit `pspp` (`Ctrl-C`/`Ctrl-Q` from any mode). |
 | `f/F or /` | Start filter input. |
 | `c/C` | Clear the committed filter. |
@@ -69,14 +72,14 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 |---|---|
 | `Space or Enter` | Toggle expand/collapse on selected node. |
 | `←` | Collapse selected node, or select parent. |
-| `→` | Expand selected node. |
+| `→`, `l` | Expand selected node (`l` needs `vim_keys`). |
 
 #### Display & Filter
 
 | Key | Action |
 |---|---|
 | `e/E` | Toggle aggregation mode: `rollup`/`flat`. |
-| `m/M` | Cycle memory type. |
+| `m/M` | Cycle memory type. *(Deviation from btop, where `m` opens the menu; in `pspp` the menu is `Esc`.)* |
 | `s` | Cycle sort key (`agg` → `own` → `pid` → `comm`). |
 | `S or r/R` | Reverse sort direction. |
 | `Filter input` | Type any characters (including spaces); matches `COMM` case-insensitively and keeps matching ancestors dimmed for context. |
@@ -95,7 +98,7 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `Options: ←/→` | Change/toggle selected option (`update_ms` adjusts by ±100 ms). |
 | `Options: Enter` | Edit `update_ms` or advance value. |
 | `Options: Esc/q/Q` | Close options and return to menu. |
-| `update_ms editor` | Digits append; `Backspace` deletes; `Enter` commits; `Esc` cancels. |
+| `update_ms` / `clock_format` editor | Type to edit; `Backspace` deletes; `Enter` commits; `Esc` cancels. |
 | `Help: ↑/↓/j/k/PgUp/PgDn` | Scroll help text. `Esc/q/Q` closes. |
 
 ### Mouse Support
@@ -134,7 +137,19 @@ base10 = false            # false = KiB/MiB/GiB (1024), true = KB/MB/GB (1000)
 save_on_exit = true       # Save TUI settings back to pspp.conf on exit
 sort_key = "agg"          # agg | own | pid | comm
 sort_reverse = true       # true = descending, false = ascending
+color_theme = "Default"   # Default | name of a btop .theme file in <config dir>/themes
+theme_background = true   # paint the theme's background colour (false = terminal background)
+truecolor = "auto"        # auto (COLORTERM) | on | off (256-colour palette)
+rounded_corners = true    # ╭╮╰╯ corners; false = ┌┐└┘
+vim_keys = true           # j/k/l/g/G navigate; false makes them inert (h still opens Help)
+disable_mouse = false     # true = do not capture the mouse (terminal selection works)
+clock_format = ""         # strftime text in the top border, e.g. "%H:%M:%S"; empty = off
+background_update = true  # false pauses refresh while Menu/Options/Help is open
+force_tty = false         # true forces tty graph glyphs (auto also picks tty for TERM=linux/dumb
+                          # or a TERM without "color" when COLORTERM is unset)
 ```
+
+All of these are editable live in **Options** (`o`/`F2`). `color_theme` cycles through the built-in `Default` theme and every `*.theme` file found in `<config dir>/themes` (`$PSPP_CONFIG_DIR/themes` when set, otherwise next to `pspp.conf`). Theme files use btop's format (`theme[main_fg]="#cc"`; `#RRGGBB`, `#RR` greys and `R G B` decimals). pspp reads `main_bg`, `main_fg`, `title`, `hi_fg`, `selected_bg`, `selected_fg`, `inactive_fg`, `meter_bg`, `div_line` and the usage gradient `cpu_start`/`cpu_mid`/`cpu_end`; every other key is ignored and anything missing keeps the Default colour.
 
 ---
 

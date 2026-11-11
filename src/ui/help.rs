@@ -4,10 +4,26 @@ use ratatui::text::{Line, Span};
 use crate::model::MemKind;
 use crate::ui::theme::Theme;
 
-const NAVIGATION_KEYS: [(&str, &str); 7] = [
-    ("↑/↓, j/k", "Move selection one row."),
+const NAVIGATION_KEYS: [(&str, &str); 11] = [
+    ("↑/↓, j/k", "Move selection one row (j/k need vim_keys)."),
     ("PgUp/PgDn", "Move by one page."),
-    ("Home/End, g/G", "Jump to first/last row."),
+    (
+        "Home/End, g/G",
+        "Jump to first/last row (g/G need vim_keys).",
+    ),
+    (
+        "h, ?, F1",
+        "Open Help (h always opens Help, even with vim_keys off).",
+    ),
+    ("o, F2", "Open Options."),
+    (
+        "+ / -",
+        "Increase / decrease the refresh interval by 100 ms.",
+    ),
+    (
+        "m vs btop",
+        "m cycles the memory type here; btop uses m for its menu (pspp's menu is Esc).",
+    ),
     (
         "q/Q, Ctrl-C, Ctrl-Q",
         "Quit pspp (Ctrl-C/Ctrl-Q from any mode).",
@@ -23,7 +39,7 @@ const TREE_KEYS: [(&str, &str); 3] = [
         "Toggle expand/collapse on selected node (also while filtering).",
     ),
     ("←", "Collapse selected node, or select parent."),
-    ("→", "Expand selected node."),
+    ("→, l", "Expand selected node (l needs vim_keys)."),
 ];
 
 const DISPLAY_KEYS: [(&str, &str); 8] = [
@@ -52,8 +68,8 @@ const MENU_KEYS: [(&str, &str); 9] = [
     ("Options: Enter", "Edit update_ms or advance value."),
     ("Options: Esc/q/Q", "Close options and return to menu."),
     (
-        "update_ms editor",
-        "Digits append; Backspace deletes; Enter commits; Esc cancels.",
+        "update_ms / clock_format editor",
+        "Type to edit; Backspace deletes; Enter commits; Esc cancels.",
     ),
     (
         "Help: ↑/↓/j/k/PgUp/PgDn",

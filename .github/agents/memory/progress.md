@@ -26,7 +26,7 @@
 - [x] M17 feat(ui): honest memory graph, used/total status, % column
 - [x] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
 - [x] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
-- [ ] M20 feat(options): btop General parity and global keys
+- [x] M20 feat(options): btop General parity and global keys
 - [ ] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
 - [ ] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
 - [ ] M23 refactor: single source of truth for enums; docs pass
@@ -299,6 +299,18 @@
 - Tests: options click/wheel/outside, help wheel/outside, hint truncation/mode content, and mouse
   Down/ScrollUp/ScrollDown at every cell of a 10×3 frame in every mode (synthetic snapshot, fast).
 - Removed from deferred notes: "No mouse handling in the Options/Help overlays".
+
+### 2026-11-11 — M20 (feat(options): btop General parity and global keys)
+- Open questions answered by the user: keep `m`; load btop `.theme` files (see decisions.md).
+- New options/config keys: `color_theme`, `theme_background`, `truecolor`, `rounded_corners`, `vim_keys`,
+  `disable_mouse`, `clock_format`, `background_update`, `force_tty` (live-applied, described, persisted
+  only when changed). New `ui/clock.rs` (chrono), btop theme parser/loader in `ui/theme.rs`,
+  `GraphSymbols::resolve_auto`, `TruecolorMode`.
+- Global keys `+`/`-`, `F1`/`?`/`h`, `F2`/`o`; `l` expands; scrolling Options list; mouse capture sync.
+- Tests: config round-trip/tolerance for every new key, theme parsing/loading/overlay, clock formatting,
+  term colour detection, key routing (vim on/off, global keys vs text input), tick pausing, mouse disable,
+  option editors, theme cycling (temp dir, no env races), draw (clock, square corners, scrolling options).
+- Deps: added `chrono` (`default-features = false`, `clock`, `std`).
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.

@@ -29,9 +29,13 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
     let fg = |rgb| Style::default().fg(theme.color(rgb));
 
     let mut block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(app.border_type())
         .border_style(fg(theme.div_line))
         .title(Span::styled(" pspp ", fg(theme.title)));
+    if let Some(clock) = app.clock_text() {
+        block =
+            block.title(Line::from(Span::styled(format!(" {clock} "), fg(theme.title))).centered());
+    }
     if let Some(bg) = theme.main_bg {
         block = block.style(Style::default().bg(theme.color(bg)));
     }
@@ -171,7 +175,7 @@ fn draw_overlay(frame: &mut Frame<'_>, app: &mut App) {
 fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(app.border_type())
         .border_style(Style::default().fg(theme.color(theme.div_line)))
         .title(Span::styled(
             " mem ",
@@ -510,6 +514,8 @@ fn hint_segments(mode: AppMode) -> &'static [(&'static str, &'static str)] {
             ("s", "sort"),
             ("S/r", "rev"),
             ("f//", "filter"),
+            ("h/F1", "help"),
+            ("o/F2", "options"),
             ("Esc", "menu"),
             ("q", "quit"),
         ],
@@ -584,7 +590,7 @@ fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
 
     let theme = &app.theme;
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(app.border_type())
         .border_style(Style::default().fg(theme.color(theme.div_line)))
         .title(Span::styled(
             " menu ",
@@ -647,12 +653,12 @@ fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
 fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
     let width = area.width.saturating_sub(4).clamp(40, 78);
-    let height = area.height.saturating_sub(4).clamp(12, 18);
+    let height = area.height.saturating_sub(4).clamp(12, 22);
     let overlay = centered_rect(area, width, height);
 
     let theme = app.theme.clone();
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(app.border_type())
         .border_style(Style::default().fg(theme.color(theme.div_line)))
         .title(Span::styled(
             " options ",
@@ -671,14 +677,16 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
 
     let label_width = 20;
     let mut row_rects = Vec::new();
-    for (idx, key) in App::option_keys().iter().enumerate() {
-        if idx >= usize::from(list_area.height) {
-            break;
-        }
-
+    let visible_rows = usize::from(list_area.height);
+    let first = app.option_scroll_for(visible_rows);
+    for (line_idx, idx) in (first..App::option_keys().len())
+        .take(visible_rows)
+        .enumerate()
+    {
+        let key = App::option_keys()[idx];
         let row_rect = Rect {
             x: list_area.x,
-            y: list_area.y + u16::try_from(idx).unwrap_or(u16::MAX),
+            y: list_area.y + u16::try_from(line_idx).unwrap_or(u16::MAX),
             width: list_area.width,
             height: 1,
         };
@@ -687,7 +695,7 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
         let line = format!(
             "{:<label_width$} {}",
             key.label(),
-            app.option_value(*key),
+            app.option_value(key),
             label_width = label_width
         );
 
@@ -700,7 +708,25 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
         };
 
         frame.render_widget(Paragraph::new(line).style(style), row_rect);
-        row_rects.push(row_rect);
+        row_rects.push((row_rect, idx));
+    }
+    if App::option_keys().len() > visible_rows && list_area.width > 0 {
+        let mut bar_state = ScrollbarState::new(
+            App::option_keys()
+                .len()
+                .saturating_sub(visible_rows)
+                .saturating_add(1),
+        )
+        .position(first);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .style(Style::default().fg(theme.color(theme.div_line)))
+                .thumb_style(Style::default().fg(theme.color(theme.hi_fg))),
+            list_area,
+            &mut bar_state,
+        );
     }
     app.set_options_hit_test(overlay, row_rects);
 
@@ -742,7 +768,7 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App) {
 
     let theme = app.theme.clone();
     let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+        .border_type(app.border_type())
         .border_style(Style::default().fg(theme.color(theme.div_line)))
         .title(Span::styled(
             " help ",
@@ -921,6 +947,74 @@ mod tests {
         let short = render_to_string(100, 10);
         assert!(!short.contains("╭ mem "));
         assert!(short.contains("COMM"));
+    }
+
+    #[test]
+    fn clock_renders_in_the_top_border_only_when_enabled() {
+        let mut app = tiny_app();
+        app.clock_format = "%Y".to_owned();
+        let year = chrono::Local::now().format("%Y").to_string();
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let top: String = (0..60)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_owned())
+            .collect();
+        assert!(top.contains(&year), "{top}");
+
+        app.clock_format.clear();
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let top: String = (0..60)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol().to_owned())
+            .collect();
+        assert!(!top.contains(&year), "{top}");
+    }
+
+    #[test]
+    fn square_corners_replace_rounded_ones() {
+        let mut app = tiny_app();
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "╭");
+        app.rounded_corners = false;
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        assert_eq!(terminal.backend().buffer()[(0, 0)].symbol(), "┌");
+    }
+
+    #[test]
+    fn options_overlay_scrolls_to_show_late_options() {
+        let mut app = tiny_app();
+        app.mode = AppMode::Options;
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let first = screen_text(&terminal, 80, 16);
+        assert!(
+            first.contains("update_ms") && !first.contains("force_tty"),
+            "{first}"
+        );
+
+        for _ in 0..16 {
+            app.on_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Down,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+        }
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let last = screen_text(&terminal, 80, 16);
+        assert!(
+            last.contains("force_tty") && !last.contains("update_ms  "),
+            "{last}"
+        );
+    }
+
+    fn screen_text(terminal: &Terminal<TestBackend>, width: u16, height: u16) -> String {
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub const CONFIG_FILE_NAME: &str = "pspp.conf";
 pub const MIN_UPDATE_MS: u64 = 100;
 pub const MAX_UPDATE_MS: u64 = 86_400_000;
+pub const DEFAULT_THEME_NAME: &str = "Default";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
@@ -20,6 +21,18 @@ pub struct Config {
     pub save_on_exit: bool,
     pub sort_key: String,
     pub sort_reverse: bool,
+    /// btop-style theme name; `Default` is built in, others load from `<config dir>/themes`.
+    pub color_theme: String,
+    pub theme_background: bool,
+    /// `auto` (detect from `COLORTERM`), `on` or `off`.
+    pub truecolor: String,
+    pub rounded_corners: bool,
+    pub vim_keys: bool,
+    pub disable_mouse: bool,
+    /// strftime string shown in the top border; empty disables the clock.
+    pub clock_format: String,
+    pub background_update: bool,
+    pub force_tty: bool,
 }
 
 impl Default for Config {
@@ -33,6 +46,15 @@ impl Default for Config {
             save_on_exit: true,
             sort_key: "agg".to_owned(),
             sort_reverse: true,
+            color_theme: DEFAULT_THEME_NAME.to_owned(),
+            theme_background: true,
+            truecolor: "auto".to_owned(),
+            rounded_corners: true,
+            vim_keys: true,
+            disable_mouse: false,
+            clock_format: String::new(),
+            background_update: true,
+            force_tty: false,
         }
     }
 }
@@ -95,6 +117,35 @@ impl Config {
         if let Some(sort_reverse) = table.get("sort_reverse").and_then(|value| value.as_bool()) {
             config.sort_reverse = sort_reverse;
         }
+        if let Some(name) = table
+            .get("color_theme")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|name| is_valid_theme_name(name))
+        {
+            config.color_theme = name.to_owned();
+        }
+        let bools: [(&str, &mut bool); 6] = [
+            ("theme_background", &mut config.theme_background),
+            ("rounded_corners", &mut config.rounded_corners),
+            ("vim_keys", &mut config.vim_keys),
+            ("disable_mouse", &mut config.disable_mouse),
+            ("background_update", &mut config.background_update),
+            ("force_tty", &mut config.force_tty),
+        ];
+        for (key, slot) in bools {
+            if let Some(value) = table.get(key).and_then(|value| value.as_bool()) {
+                *slot = value;
+            }
+        }
+        if let Some(truecolor) = table.get("truecolor").and_then(toml_string_lower) {
+            if matches!(truecolor.as_str(), "auto" | "on" | "off") {
+                config.truecolor = truecolor;
+            }
+        }
+        if let Some(clock) = table.get("clock_format").and_then(|value| value.as_str()) {
+            config.clock_format = clock.to_owned();
+        }
 
         config
     }
@@ -115,6 +166,21 @@ impl Config {
             let _ = fs::remove_file(&tmp);
         })
     }
+}
+
+/// Directory scanned for btop `.theme` files.
+pub fn themes_dir() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join("themes"))
+}
+
+/// Theme names become file names, so reject anything that could escape the themes directory.
+pub fn is_valid_theme_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.' | ' '))
+        && !name.starts_with('.')
 }
 
 pub fn config_path() -> Option<PathBuf> {
@@ -163,6 +229,15 @@ mod tests {
                 save_on_exit: false,
                 sort_key: "pid".to_owned(),
                 sort_reverse: false,
+                color_theme: "my-theme".to_owned(),
+                theme_background: false,
+                truecolor: "off".to_owned(),
+                rounded_corners: false,
+                vim_keys: false,
+                disable_mouse: true,
+                clock_format: "%H:%M:%S".to_owned(),
+                background_update: false,
+                force_tty: true,
             };
 
             expected.save().expect("save config");
@@ -189,6 +264,48 @@ mod tests {
             assert!(!dir.join("pspp.conf.tmp").exists());
             assert_eq!(Config::load(), Config::default());
         });
+    }
+
+    #[test]
+    fn new_options_default_to_btop_like_values() {
+        let defaults = Config::default();
+        assert_eq!(defaults.color_theme, "Default");
+        assert!(defaults.theme_background && defaults.rounded_corners && defaults.vim_keys);
+        assert!(defaults.background_update);
+        assert!(!defaults.disable_mouse && !defaults.force_tty);
+        assert_eq!(defaults.truecolor, "auto");
+        assert!(defaults.clock_format.is_empty());
+    }
+
+    #[test]
+    fn invalid_new_option_values_fall_back_per_key() {
+        with_test_config_dir("invalid-new", |dir| {
+            fs::write(
+                dir.join("pspp.conf"),
+                "truecolor = \"maybe\"\nvim_keys = \"yes\"\ncolor_theme = \"../../etc/passwd\"\n\
+                 rounded_corners = false\nclock_format = 5\nforce_tty = true\n",
+            )
+            .expect("write config");
+            let loaded = Config::load();
+            assert_eq!(loaded.truecolor, "auto");
+            assert!(loaded.vim_keys, "non-bool keeps the default");
+            assert_eq!(
+                loaded.color_theme, "Default",
+                "path-like names are rejected"
+            );
+            assert!(!loaded.rounded_corners, "valid keys still apply");
+            assert!(loaded.force_tty);
+            assert!(loaded.clock_format.is_empty());
+        });
+    }
+
+    #[test]
+    fn theme_name_validation_blocks_path_traversal() {
+        assert!(super::is_valid_theme_name("Tokyo Night"));
+        assert!(super::is_valid_theme_name("solarized-dark_2"));
+        for bad in ["", "..", "../x", "a/b", ".hidden", "a\\b"] {
+            assert!(!super::is_valid_theme_name(bad), "{bad}");
+        }
     }
 
     #[test]

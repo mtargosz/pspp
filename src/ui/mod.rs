@@ -1,6 +1,7 @@
 //! Interactive ratatui terminal interface, event loop, theme, graphs, and overlays.
 
 pub mod app;
+pub mod clock;
 pub mod draw;
 pub mod graph;
 pub mod help;
@@ -75,8 +76,12 @@ pub fn run_tui(
     }
     let mut terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    // `setup_terminal_state` enabled mouse capture; `disable_mouse` is applied (and re-applied
+    // when toggled in Options) at the top of every iteration.
+    let mut mouse_captured = true;
 
     while !app.should_quit {
+        sync_mouse_capture(&mut mouse_captured, app.mouse_enabled())?;
         terminal.draw(|frame| draw::draw(frame, &mut app))?;
 
         let timeout = app.poll_timeout(Instant::now());
@@ -97,6 +102,20 @@ pub fn run_tui(
     drop(terminal);
     terminal_guard.restore()?;
     Ok(app.ui_settings())
+}
+
+fn sync_mouse_capture(captured: &mut bool, wanted: bool) -> io::Result<()> {
+    if *captured == wanted {
+        return Ok(());
+    }
+    let mut stdout = io::stdout();
+    if wanted {
+        execute!(stdout, EnableMouseCapture)?;
+    } else {
+        execute!(stdout, DisableMouseCapture)?;
+    }
+    *captured = wanted;
+    Ok(())
 }
 
 fn setup_terminal_state() -> io::Result<()> {

@@ -246,13 +246,32 @@ The interactive TUI supports keyboard control across all views and overlays:
 .SS Navigation
 .TP
 .B Up/Down, j/k
-Move selection one row.
+Move selection one row
+.RB ( j/k
+need
+.BR vim_keys ).
 .TP
 .B PgUp/PgDn
 Move selection by one page.
 .TP
 .B Home/End, g/G
-Jump to first or last visible row.
+Jump to first or last visible row
+.RB ( g/G
+need
+.BR vim_keys ).
+.TP
+.B h, ?, F1
+Open Help
+.RB ( h
+always opens Help, even with
+.B vim_keys
+off).
+.TP
+.B o, F2
+Open Options.
+.TP
+.B + / \-
+Increase or decrease the refresh interval by 100 ms.
 .TP
 .B q/Q, Ctrl\-C, Ctrl\-Q
 Quit
@@ -281,8 +300,11 @@ Toggle expand/collapse on the selected process node.
 .B Left
 Collapse the selected node if expanded, otherwise jump to its parent node.
 .TP
-.B Right
-Expand the selected node.
+.B Right, l
+Expand the selected node
+.RB ( l
+needs
+.BR vim_keys ).
 .SS Display & Filter Input
 .TP
 .B e/E
@@ -293,6 +315,12 @@ and
 .TP
 .B m/M
 Cycle through memory metrics available on the current OS.
+(Deviation from btop, where
+.B m
+opens the menu; in
+.B pspp
+the menu is
+.BR Esc .)
 .TP
 .B s
 Cycle sort key
@@ -440,8 +468,42 @@ Supported TOML keys:
 .BR base10 ,
 .BR save_on_exit ,
 .BR sort_key ,
+.BR sort_reverse ,
+.BR color_theme ,
+.BR theme_background ,
+.BR truecolor " (auto|on|off)" ,
+.BR rounded_corners ,
+.BR vim_keys ,
+.BR disable_mouse ,
+.BR clock_format " (strftime; empty hides the clock)" ,
+.BR background_update ,
 and
-.BR sort_reverse .
+.BR force_tty .
+All are editable live in the Options overlay.
+.TP
+.I $PSPP_CONFIG_DIR/themes/NAME.theme
+btop-format theme files selectable through
+.BR color_theme .
+Recognised keys:
+.BR main_bg ,
+.BR main_fg ,
+.BR title ,
+.BR hi_fg ,
+.BR selected_bg ,
+.BR selected_fg ,
+.BR inactive_fg ,
+.BR meter_bg ,
+.BR div_line ,
+and the usage gradient
+.BR cpu_start / cpu_mid / cpu_end ;
+other keys are ignored.
+Without
+.BR PSPP_CONFIG_DIR ,
+the directory is
+.I themes/
+next to
+.IR pspp.conf .
+.PP
 When
 .B save_on_exit
 is
