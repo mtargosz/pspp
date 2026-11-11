@@ -362,13 +362,13 @@ impl ProcTree {
             };
         }
 
-        let needle = filter.to_ascii_lowercase();
+        let needle = filter.to_lowercase();
         let mut direct = HashSet::new();
         for pid in &self.ordered_pids {
             let matches = self
                 .nodes
                 .get(pid)
-                .map(|node| node.rec.comm.to_ascii_lowercase().contains(&needle))
+                .map(|node| node.rec.comm.to_lowercase().contains(&needle))
                 .unwrap_or(false);
             if matches {
                 direct.insert(*pid);
@@ -567,13 +567,13 @@ impl ProcTree {
             SortBy::Comm => self
                 .nodes
                 .get(&left)
-                .map(|node| node.rec.comm.to_ascii_lowercase())
+                .map(|node| node.rec.comm.to_lowercase())
                 .unwrap_or_default()
                 .cmp(
                     &self
                         .nodes
                         .get(&right)
-                        .map(|node| node.rec.comm.to_ascii_lowercase())
+                        .map(|node| node.rec.comm.to_lowercase())
                         .unwrap_or_default(),
                 ),
         };
@@ -787,5 +787,32 @@ mod tests {
         ]));
         let matches = tree.filter_match_set("");
         assert_eq!(matches.visible, HashSet::from([10, 11, 12]));
+    }
+
+    #[test]
+    fn filter_match_set_folds_unicode_case() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(1, 0, "CAFÉ", 1),
+            proc(2, 1, "école", 1),
+            proc(3, 0, "other", 1),
+        ]));
+        let accent = tree.filter_match_set("café");
+        assert_eq!(accent.direct, HashSet::from([1]));
+        assert_eq!(accent.visible, HashSet::from([1]));
+
+        let upper = tree.filter_match_set("ÉCOLE");
+        assert_eq!(upper.direct, HashSet::from([2]));
+        assert_eq!(upper.visible, HashSet::from([1, 2]));
+    }
+
+    #[test]
+    fn single_process_is_its_own_root_without_children() {
+        let tree = ProcTree::build(&snapshot(vec![proc(1, 0, "init", 42)]));
+        assert_eq!(tree.root_children(), &[1]);
+        let rollup = tree.rollup(MemKind::Rss);
+        let row = rollup.get(&1).expect("row for lone process");
+        assert_eq!((row.own, row.aggregated, row.descendant_count), (42, 42, 0));
+        let flat = tree.flat(MemKind::Rss);
+        assert_eq!(flat.get(&1).map(|row| row.aggregated), Some(0));
     }
 }

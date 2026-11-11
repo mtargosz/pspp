@@ -416,6 +416,27 @@ mod tests {
     }
 
     #[test]
+    fn render_zero_size_returns_no_lines() {
+        let theme = Theme::new(true);
+        let h = history_of(&[1, 2, 3]);
+        assert!(render(&h, 0, 3, 100, GraphSymbols::Braille, &theme).is_empty());
+        assert!(render(&h, 4, 0, 100, GraphSymbols::Braille, &theme).is_empty());
+    }
+
+    #[test]
+    fn render_empty_history_yields_blank_rows_of_full_width() {
+        let theme = Theme::new(true);
+        let empty = History::new(HISTORY_CAP);
+        let lines = render(&empty, 5, 2, 100, GraphSymbols::Braille, &theme);
+        assert_eq!(lines.len(), 2);
+        for line in &lines {
+            let content = text(line);
+            assert_eq!(content.chars().count(), 5);
+            assert!(content.chars().all(|c| c == ' '));
+        }
+    }
+
+    #[test]
     fn meter_fill_and_width() {
         let theme = Theme::new(true);
         let spans = meter_spans(&theme, 10, 50, 100);

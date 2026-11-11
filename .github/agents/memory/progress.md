@@ -16,7 +16,7 @@
 - [x] 9. graphs — braille history graph + meter bars (block/tty fallbacks)
 - [x] 10. menus — Esc overlay, Options (General-style), config persistence
 - [x] 11. help — plain-English memory explanations, filter (f, /)
-- [ ] 12. testing-pass — tester agent full pass
+- [x] 12. testing-pass — tester agent full pass
 - [ ] 13. review-pass — reviewer agent full pass
 - [ ] 14. docs — README, --help, man page
 
@@ -161,3 +161,34 @@
     - `ui/help.rs`: memory-help coverage for every `MemKind` and help scroll clamp helper.
   - Validation: `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt`,
     `cargo test` all green.
+
+### 2026-11-11 — tester
+- Milestone 12 testing pass over the whole crate.
+- Test counts: before 51 unit + 4 integration; after 62 unit (+11) + 4 integration. All green.
+- Gates: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` all clean.
+- Bugs fixed:
+  - Unicode case folding: pattern, TUI filter, and comm sort used ASCII-only lowercasing, so
+    `café` did not match `CAFÉ`. Switched `query/mod.rs` (pattern, comm sort) and `model/tree.rs`
+    (`filter_match_set`, `compare_pid_for_sort`) to `to_lowercase()`.
+  - `format_size` unit boundary: values rounding up to the base printed as `1024.0 KiB`
+    (or `1000.0 KB`). Unit is now chosen after one-decimal rounding (`1.0 MiB`).
+- Tests added:
+  - `query/mod.rs`: `pattern_match_folds_unicode_case`, `run_query_handles_empty_and_single_process_snapshots`,
+    `run_query_pid_subtree_terminates_on_cycle`, `run_query_unknown_pid_yields_no_rows`,
+    `run_query_total_saturates_on_overflow`, `parse_size_edge_inputs`,
+    `format_size_promotes_unit_when_rounding_reaches_base`.
+  - `model/tree.rs`: `filter_match_set_folds_unicode_case`, `single_process_is_its_own_root_without_children`.
+  - `ui/graph.rs`: `render_zero_size_returns_no_lines`, `render_empty_history_yields_blank_rows_of_full_width`.
+- Query-mode CLI exercised (`target/debug/pspp`): `--top 5`, `--json --top 5` (structure validated:
+  rows/total, eight row keys), `--agg flat`, `--mem vsz`, `--mem footprint`, `--sort own`, `--min 1G`,
+  `--min 0`, `--min 1.5`, `--base10`, pattern `edge`, pattern `café`, `--pid 1`, `--pid 999999`
+  (+`--json`). Invalid: `--mem bogus` exit 2 (lists kinds), `--mem pss` exit 2 (unavailable on macOS),
+  `--min 12X` exit 2, `--top -1` / `--min -1G` exit 2 (clap; needs `--` form). `--top 0` exit 0.
+
+## Known issues
+- Design question (not changed): `--top 0` prints zero rows (exit 0, "no matches" on stderr); it may
+  be intended as "no limit". Decide and document in the CLI help.
+- Design question (not changed): unmatched `--pid` or pattern exits 0 with "no matches"; a
+  grep-style exit 1 for no matches may be preferable for scripting.
+- `TOTAL` semantics: `total` in JSON and the plain TOTAL row sum only the rows that are returned
+  (after filter and `--top`). Spec does not state whether TOTAL should cover all matches. Confirm.

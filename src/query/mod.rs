@@ -89,10 +89,7 @@ fn matching_rows(snapshot: &Snapshot, opts: &QueryOpts) -> Vec<RenderRow> {
         .map(|proc_rec| (proc_rec.pid, proc_rec))
         .collect();
     let allowed = allowed_pid_set(snapshot, opts.pid);
-    let lowered_pattern = opts
-        .pattern
-        .as_ref()
-        .map(|value| value.to_ascii_lowercase());
+    let lowered_pattern = opts.pattern.as_ref().map(|value| value.to_lowercase());
 
     let mut rows: Vec<RenderRow> = snapshot
         .procs
@@ -175,7 +172,7 @@ fn pattern_matches(comm: &str, lowered_pattern: Option<&str>) -> bool {
     let Some(pattern) = lowered_pattern else {
         return true;
     };
-    comm.to_ascii_lowercase().contains(pattern)
+    comm.to_lowercase().contains(pattern)
 }
 
 fn compare_rows(left: &RenderRow, right: &RenderRow, sort_by: SortBy) -> Ordering {
@@ -191,8 +188,8 @@ fn compare_rows(left: &RenderRow, right: &RenderRow, sort_by: SortBy) -> Orderin
         SortBy::Pid => left.pid.cmp(&right.pid),
         SortBy::Comm => left
             .comm
-            .to_ascii_lowercase()
-            .cmp(&right.comm.to_ascii_lowercase())
+            .to_lowercase()
+            .cmp(&right.comm.to_lowercase())
             .then_with(|| left.pid.cmp(&right.pid)),
     }
 }
@@ -422,7 +419,7 @@ pub fn format_size(bytes: u64, base10: bool) -> String {
 
     let mut value = bytes as f64;
     let mut idx = 0_usize;
-    while value >= base && idx + 1 < units.len() {
+    while idx + 1 < units.len() && (value * 10.0).round() / 10.0 >= base {
         value /= base;
         idx += 1;
     }
@@ -486,6 +483,13 @@ mod tests {
     }
 
     #[test]
+    fn format_size_promotes_unit_when_rounding_reaches_base() {
+        assert_eq!(format_size(1_048_550, false), "1.0 MiB");
+        assert_eq!(format_size(999_960, true), "1.0 MB");
+        assert_eq!(format_size(1_048_000, false), "1023.4 KiB");
+    }
+
+    #[test]
     fn run_query_json_emits_rows_and_total() {
         let snap = snapshot(vec![
             proc(1, 0, "launchd", 10_000),
@@ -531,5 +535,121 @@ mod tests {
         assert!(rendered.contains("worker-alpha"));
         assert!(rendered.contains("worker-beta"));
         assert!(!rendered.contains("other"));
+    }
+
+    #[test]
+    fn pattern_match_folds_unicode_case() {
+        let snap = snapshot(vec![
+            proc(1, 0, "CAFÉ-worker", 10),
+            proc(2, 0, "école-daemon", 20),
+        ]);
+
+        let accent_lower = QueryOpts {
+            pattern: Some("café".to_owned()),
+            ..QueryOpts::default()
+        };
+        let rendered = run_query(&snap, &accent_lower);
+        assert!(rendered.contains("CAFÉ-worker"));
+        assert!(!rendered.contains("école-daemon"));
+
+        let accent_upper = QueryOpts {
+            pattern: Some("ÉCOLE".to_owned()),
+            ..QueryOpts::default()
+        };
+        let rendered = run_query(&snap, &accent_upper);
+        assert!(rendered.contains("école-daemon"));
+        assert!(!rendered.contains("CAFÉ-worker"));
+    }
+
+    #[test]
+    fn run_query_handles_empty_and_single_process_snapshots() {
+        let json = QueryOpts {
+            json: true,
+            ..QueryOpts::default()
+        };
+
+        let empty: Value = serde_json::from_str(&run_query(&snapshot(Vec::new()), &json))
+            .expect("empty query json should parse");
+        assert_eq!(empty["rows"].as_array().map(Vec::len), Some(0));
+        assert_eq!(empty["total"].as_u64(), Some(0));
+
+        let single: Value =
+            serde_json::from_str(&run_query(&snapshot(vec![proc(1, 0, "init", 500)]), &json))
+                .expect("single query json should parse");
+        let rows = single["rows"].as_array().expect("rows should be array");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["children"].as_u64(), Some(0));
+        assert_eq!(rows[0]["agg"].as_u64(), Some(500));
+        assert_eq!(single["total"].as_u64(), Some(500));
+    }
+
+    #[test]
+    fn run_query_pid_subtree_terminates_on_cycle() {
+        let snap = snapshot(vec![
+            proc(6, 7, "cycle-a", 6),
+            proc(7, 6, "cycle-b", 7),
+            proc(8, 0, "outside", 8),
+        ]);
+        let opts = QueryOpts {
+            pid: Some(6),
+            json: true,
+            ..QueryOpts::default()
+        };
+
+        let parsed: Value =
+            serde_json::from_str(&run_query(&snap, &opts)).expect("cycle query json should parse");
+        let pids: Vec<i64> = parsed["rows"]
+            .as_array()
+            .expect("rows should be array")
+            .iter()
+            .filter_map(|row| row["pid"].as_i64())
+            .collect();
+        assert!(pids.contains(&6));
+        assert!(pids.contains(&7));
+        assert!(!pids.contains(&8));
+    }
+
+    #[test]
+    fn run_query_unknown_pid_yields_no_rows() {
+        let snap = snapshot(vec![proc(1, 0, "init", 100)]);
+        let opts = QueryOpts {
+            pid: Some(424_242),
+            json: true,
+            ..QueryOpts::default()
+        };
+
+        let parsed: Value =
+            serde_json::from_str(&run_query(&snap, &opts)).expect("json should parse");
+        assert_eq!(parsed["rows"].as_array().map(Vec::len), Some(0));
+        assert_eq!(parsed["total"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn run_query_total_saturates_on_overflow() {
+        let snap = snapshot(vec![
+            proc(1, 0, "big-a", u64::MAX),
+            proc(2, 0, "big-b", u64::MAX),
+        ]);
+        let opts = QueryOpts {
+            json: true,
+            ..QueryOpts::default()
+        };
+
+        let parsed: Value =
+            serde_json::from_str(&run_query(&snap, &opts)).expect("json should parse");
+        assert_eq!(parsed["total"].as_u64(), Some(u64::MAX));
+    }
+
+    #[test]
+    fn parse_size_edge_inputs() {
+        assert_eq!(parse_size("0"), Ok(0));
+        assert_eq!(parse_size(".5G"), Ok(512 * 1024 * 1024));
+        assert!(parse_size("-1").is_err());
+        assert!(parse_size("1..5G").is_err());
+        assert!(parse_size("1.5.5G").is_err());
+        assert!(parse_size(".").is_err());
+        assert!(parse_size("1e3").is_err());
+        assert!(parse_size("inf").is_err());
+        assert!(parse_size("99999999999999999999").is_err());
     }
 }
