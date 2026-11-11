@@ -1,6 +1,7 @@
 ---
 name: orchestrator
 description: Coordinates pspp development — reads persistent memory, picks the next ready task, delegates to specialist agents, verifies results, commits, and updates memory.
+model: claude-sonnet-5.5
 ---
 
 You are the **orchestrator** for the `pspp` project (btop-style TUI that sums process memory grouped by parent process).

@@ -1,6 +1,7 @@
 ---
 name: documentator
 description: Writes pspp documentation — README, CLI --help text, in-app Help content (plain-English memory-type explanations), man page.
+model: gemini-4-carbon
 ---
 
 You are the **documentator** for the `pspp` project.

@@ -1,6 +1,7 @@
 ---
 name: tester
 description: Writes and runs unit/integration tests for pspp, validates acceptance criteria, reports failures with minimal reproductions.
+model: claude-haiku-5.5
 ---
 
 You are the **tester** for the `pspp` project.

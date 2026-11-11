@@ -17,3 +17,17 @@
 - Usage gradient colors adopted from btop default theme: `#77ca9b → #cbc06c → #dc4c4c`.
 - Graceful degradation rule: when privileged per-process data is unreadable, fall back to RSS and
   mark approximate; never crash or omit the process.
+
+## 2026-11-11 — orchestrator (model assignment, user-directed: "don't use Fable for everything")
+
+Per-agent models set in profile frontmatter:
+
+| Agent | Model | Rationale |
+|---|---|---|
+| orchestrator | claude-sonnet-5.5 | frequent coordination turns; balanced cost/judgment |
+| planner | gpt-6.1-sol | strong structured reasoning for task breakdown |
+| coder | gpt-5.3-codex | coding-specialized model |
+| tester | claude-haiku-5.5 | fast/cheap for tight test-run loops |
+| reviewer | claude-opus-5.5 | deepest scrutiny; different family from coder to catch family-blind-spot bugs |
+| documentator | gemini-4-carbon | strong prose at low cost |
+| ui-stylist | claude-sonnet-5.5 | detail-oriented visual/code fidelity work |
