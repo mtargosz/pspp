@@ -58,7 +58,8 @@ impl History {
         self.pushed += 1;
     }
 
-    pub fn clear(&mut self) {
+    #[cfg(test)]
+    fn clear(&mut self) {
         self.samples.clear();
         self.pushed = 0;
     }

@@ -13,9 +13,10 @@ src/
                        Both modes: --mem, --agg, --sort, --base10, --update-ms (clamped), -f/--filter
                        Config saved on exit = only fields changed in the TUI (diff vs. initial settings)
   collect/
-    mod.rs           — Snapshot API: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>
+    mod.rs           — Snapshot API: { procs: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>, total_mem, used_mem, taken_at }
                        MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
-    macos.rs         — sysinfo base + libproc proc_pid_rusage (ri_phys_footprint); graceful fallback
+    macos.rs         — pid/ppid/p_comm from sysctl(KERN_PROC_ALL) (unprivileged) + sysinfo name/RSS/VSZ +
+                       proc_pid_rusage (ri_phys_footprint); graceful fallback
     linux.rs         — /proc/<pid>/stat (pid/ppid/comm/rss/vsz) + smaps_rollup (pss/uss/swap);
                        permission/malformed-input fallback to RSS/VSZ-only records
   model/
@@ -126,8 +127,9 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 
 ## Graphs (milestone 9)
 
-- `ui::graph::History` (cap 600) holds total memory of the current `MemKind` (sum over snapshot procs),
-  pushed once per tick by `App`; cleared and re-seeded when the kind changes. `pushed` counts samples
+- `ui::graph::History` (cap 600) holds system memory in use (`Snapshot::used_mem`: macOS `used_memory()`,
+  Linux `MemTotal - MemAvailable`), pushed once per tick by `App`; independent of the selected `MemKind`.
+  `App::mem_kind_sum()` is Σ of the selected kind (may exceed RAM) and is only displayed, never a scale. `pushed` counts samples
   ever added so braille cell pairing is anchored to absolute sample parity (no shimmer).
 - `graph::render(&History, width, height, max, GraphSymbols, &Theme) -> Vec<Line>` (top row first).
   - Braille: 2 samples/cell, 4 levels/row via const `BRAILLE_UP[left][right]`; newest sample is the right
@@ -138,6 +140,7 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - `GraphSymbols::{detect(), from_term}`; `App.graph_symbol` stores the user choice
   (`auto|braille|block|tty`) and resolves to a concrete renderer at draw time.
 - `graph::meter_spans(theme, width, value, scale)`: per-cell gradient `■` filled part + `meter_bg` rest.
+- Table columns: COMM, PID, OWN, `<MEM> Σ`, `%` (Σ ÷ total RAM, 1 decimal), CHILDREN, METER.
 - Layout: status line, then rounded " mem " box (6 rows: 3 graph + 1 summary line, hidden when the inner
   area is < 12 rows), table header, table body, hint bar.
 

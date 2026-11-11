@@ -346,13 +346,20 @@ impl App {
         self.graph_symbol.resolve()
     }
 
-    /// System-wide total of the selected memory kind across all processes.
-    pub fn mem_total_used(&self) -> u64 {
+    /// Σ of the selected memory kind over all processes. This can exceed physical RAM (shared
+    /// pages are counted once per process; footprint includes compressed memory), so it is shown
+    /// as a plain figure and never used as a graph or percentage scale.
+    pub fn mem_kind_sum(&self) -> u64 {
         self.snapshot
             .procs
             .iter()
             .filter_map(|proc_rec| self.mem_kind.get(&proc_rec.mem))
             .fold(0_u64, u64::saturating_add)
+    }
+
+    /// System-wide memory in use (what the history graph plots).
+    pub fn mem_used(&self) -> u64 {
+        self.snapshot.used_mem
     }
 
     /// Graph scale: total physical memory.
@@ -450,8 +457,7 @@ impl App {
     }
 
     fn record_mem_sample(&mut self) {
-        let used = self.mem_total_used();
-        self.mem_history.push(used);
+        self.mem_history.push(self.mem_used());
     }
 
     pub fn poll_timeout(&self, now: Instant) -> Duration {
@@ -932,8 +938,6 @@ impl App {
         }
 
         self.mem_kind = cycle_mem_kind_value(self.mem_kind, delta, &available);
-        self.mem_history.clear();
-        self.record_mem_sample();
         self.rebuild_rows();
     }
 

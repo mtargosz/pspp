@@ -200,7 +200,9 @@ Triggers query mode.
 .B \-\-json
 Format query output as pretty-printed JSON
 .RB ( "{ ""mem"": ""rss"", ""agg"": ""rollup"", ""rows"": [...], ""total"": <bytes> }" )
-with raw integer byte values.
+with raw integer byte values; each row also carries
+.B pct
+(aggregated memory as a percentage of total RAM, one decimal).
 Triggers query mode.
 .TP
 .B \-\-query

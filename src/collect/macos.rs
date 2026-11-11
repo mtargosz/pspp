@@ -147,6 +147,7 @@ pub(crate) fn take_snapshot() -> Snapshot {
     Snapshot {
         procs,
         total_mem: system.total_memory(),
+        used_mem: system.used_memory().min(system.total_memory()),
         taken_at: Instant::now(),
     }
 }

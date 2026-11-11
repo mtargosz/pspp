@@ -2,7 +2,8 @@
 
 use std::time::Instant;
 
-#[cfg(target_os = "linux")]
+// Compiled in tests on every platform so the Linux parsers can be unit-tested on macOS.
+#[cfg(any(target_os = "linux", test))]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -30,6 +31,8 @@ pub struct ProcRec {
 pub struct Snapshot {
     pub procs: Vec<ProcRec>,
     pub total_mem: u64,
+    /// System-wide memory in use (macOS: `used_memory()`; Linux: `MemTotal - MemAvailable`).
+    pub used_mem: u64,
     pub taken_at: Instant,
 }
 
@@ -88,6 +91,7 @@ pub fn take_snapshot() -> Snapshot {
     Snapshot {
         procs: Vec::new(),
         total_mem: 0,
+        used_mem: 0,
         taken_at: Instant::now(),
     }
 }
@@ -121,6 +125,7 @@ mod tests {
 
         assert!(!snapshot.procs.is_empty());
         assert!(snapshot.total_mem > 0);
+        assert!(snapshot.used_mem > 0 && snapshot.used_mem <= snapshot.total_mem);
         assert!(snapshot
             .procs
             .iter()

@@ -63,3 +63,13 @@ Per-agent models set in profile frontmatter:
   started with (config + CLI overrides) against the final settings and writes only differing fields, so CLI
   overrides are never saved. Caveat: changing a value and changing it back to the CLI-overridden value is
   indistinguishable from no change. This also reverses the reviewer's "`--update-ms` is persisted" note.
+
+## 2026-11-11 — M17
+
+- **Graph and status plot real system memory in use**, not Σ of per-process values: `Snapshot::used_mem`
+  (macOS `used_memory()`; Linux `MemTotal - MemAvailable`). Σ of the selected kind is shown separately
+  (`Σ RSS 18.4 GiB`) because it can exceed RAM (shared pages per process; footprint includes compressed
+  memory). Consequence: the history graph no longer resets when the memory kind changes.
+- **`%` column = row aggregated ÷ total RAM**, one decimal, deliberately not capped at 100 (a rollup of
+  footprint can read 137%); JSON `pct` is the same value as a number; the TUI column caps display at 999.9%.
+- `collect::linux` compiles under `cfg(test)` on every platform so its parsers are unit-testable on macOS.

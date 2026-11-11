@@ -631,6 +631,7 @@ mod tests {
         Snapshot {
             procs,
             total_mem: 0,
+            used_mem: 0,
             taken_at: Instant::now(),
         }
     }

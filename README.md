@@ -42,9 +42,9 @@ pspp -f chrome                  # pre-set the process filter (like btop -f)
 
 The TUI renders a rounded btop-style frame with:
 
-- **Status bar** showing process count, active memory metric, aggregation mode, sort order, refresh interval, total memory, and active filter indicator.
-- **Live memory history graph** (`mem` box, automatically hidden on short terminals) using UTF-8 braille (`braille`), block (`block`), or ASCII (`tty`) glyphs and a 101-step grass-green → yellow → bloody-red usage gradient (`#77ca9b → #cbc06c → #dc4c4c`), with automatic 256-color fallback when `COLORTERM` is not `truecolor`/`24bit`.
-- **Expandable process tree table** with per-row `■` usage meters, `OWN` and aggregated (`<MEM> Σ`) columns, child counts, and live substring filtering that preserves ancestor context.
+- **Status bar** showing process count, active memory metric, aggregation mode, sort order, refresh interval, `used X / Y` system memory (gradient-coloured by used fraction), and active filter indicator.
+- **Live memory history graph** (`mem` box, automatically hidden on short terminals) of real system memory in use (`used / total`; summary line `used 12.1 GiB / 32.0 GiB ■■■■ 38%  Σ RSS 18.4 GiB`), using UTF-8 braille (`braille`), block (`block`), or ASCII (`tty`) glyphs and a 101-step grass-green → yellow → bloody-red usage gradient (`#77ca9b → #cbc06c → #dc4c4c`), with automatic 256-color fallback when `COLORTERM` is not `truecolor`/`24bit`.
+- **Expandable process tree table** with per-row `■` usage meters, `OWN`, aggregated (`<MEM> Σ`) and `%` (Σ ÷ total RAM, can exceed 100% because shared pages are counted per process) columns, child counts, and live substring filtering that preserves ancestor context.
 
 ### Key Bindings
 
@@ -162,39 +162,45 @@ sort_reverse = true       # true = descending, false = ascending
 
 ```console
 $ pspp --top 5
-PID    PARENT          COMM                           OWN      RSS Σ (rollup)  CHILDREN
----------------------------------------------------------------------------------------
-1      -               launchd                        0 B            11.1 GiB       271
-8017   1(launchd)      Microsoft Edge           263.9 MiB             3.9 GiB        97
-38372  1(launchd)      Google Chrome            133.0 MiB             1.1 GiB        29
-88701  1(launchd)      MSTeams                   53.4 MiB             1.0 GiB         2
-88752  88701(MSTeams)  Microsoft Teams WebView  143.6 MiB           980.7 MiB         8
-                       TOTAL                                         11.1 GiB
+PID    PARENT      COMM                  OWN  RSS Σ (rollup)      %  CHILDREN
+-----------------------------------------------------------------------------
+1      -           launchd               0 B        11.7 GiB  65.1%       501
+8017   1(launchd)  Microsoft Edge  273.2 MiB         3.9 GiB  21.5%        98
+38372  1(launchd)  Google Chrome   178.6 MiB         1.4 GiB   7.9%        28
+52183  1(launchd)  claude           93.4 MiB       911.9 MiB   4.9%         4
+46189  1(launchd)  Claude          174.1 MiB       463.9 MiB   2.5%        12
+                   TOTAL                            11.7 GiB  65.1%
 ```
 
 #### 2. Filter by process name (`PATTERN`)
 
 ```console
 $ pspp zsh
-PID    PARENT             COMM         OWN      RSS Σ (rollup)  CHILDREN
-------------------------------------------------------------------------
-97242  97241(login)       zsh    656.0 KiB            13.1 MiB         1
-48332  50784(herdr-core)  zsh    704.0 KiB           704.0 KiB         0
-9602   9601(login)        zsh    672.0 KiB           672.0 KiB         0
-                          TOTAL                       14.5 MiB
+PID    PARENT             COMM         OWN  RSS Σ (rollup)     %  CHILDREN
+--------------------------------------------------------------------------
+60888  50784(herdr-core)  zsh      1.8 MiB       353.6 MiB  1.9%         1
+9602   9601(login)        zsh      1.2 MiB       192.9 MiB  1.0%         1
+84378  61037(claude)      zsh      2.9 MiB        25.7 MiB  0.1%         1
+97242  97241(login)       zsh    656.0 KiB        13.8 MiB  0.1%         1
+55005  50784(herdr-core)  zsh      1.9 MiB         1.9 MiB  0.0%         0
+49660  50784(herdr-core)  zsh      1.4 MiB         1.4 MiB  0.0%         0
+40164  40163(login)       zsh      1.3 MiB         1.3 MiB  0.0%         0
+18361  23042(github)      zsh      1.2 MiB         1.2 MiB  0.0%         0
+66235  58240(herdr)       zsh    656.0 KiB       656.0 KiB  0.0%         0
+                          TOTAL                  566.9 MiB  3.1%
 ```
 
 #### 3. Combine `--mem` and `--agg` (direct-children `flat` sum)
 
 ```console
 $ pspp --mem footprint --agg flat --top 4
-PID    PARENT          COMM                           OWN   Footprint Σ (flat)  CHILDREN
-----------------------------------------------------------------------------------------
-8017   1(launchd)      Microsoft Edge           822.1 MiB             24.4 GiB        97
-1      -               launchd                       0 B~              8.7 GiB       270
-38372  1(launchd)      Google Chrome            364.6 MiB              2.1 GiB        29
-88752  88701(MSTeams)  Microsoft Teams WebView  146.7 MiB              2.0 GiB         8
-                       TOTAL                                          37.2 GiB
+PID    PARENT          COMM                           OWN  Footprint Σ (flat)       %  CHILDREN
+-----------------------------------------------------------------------------------------------
+8017   1(launchd)      Microsoft Edge           824.5 MiB            24.7 GiB  137.0%        98
+1      -               launchd                       0 B~            9.0 GiB~   49.9%       501
+38372  1(launchd)      Google Chrome            368.3 MiB             2.1 GiB   11.9%        28
+88752  88701(MSTeams)  Microsoft Teams WebView  134.2 MiB             1.9 GiB   10.8%         7
+                       TOTAL                                        37.7 GiB~  209.6%
 ```
 
 *(On Linux, try `pspp --mem pss --agg rollup --top 5` for proportional shared-memory rollups.)*
@@ -203,12 +209,12 @@ PID    PARENT          COMM                           OWN   Footprint Σ (flat) 
 
 ```console
 $ pspp --min 500M --sort own --top 3
-PID    PARENT      COMM                  OWN     RSS Σ (rollup)  CHILDREN
--------------------------------------------------------------------------
-8017   1(launchd)  Microsoft Edge  263.9 MiB            3.9 GiB        97
-38372  1(launchd)  Google Chrome   133.0 MiB            1.1 GiB        29
-1      -           launchd               0 B           11.1 GiB       271
-                   TOTAL                               11.1 GiB
+PID    PARENT      COMM                  OWN  RSS Σ (rollup)      %  CHILDREN
+-----------------------------------------------------------------------------
+8017   1(launchd)  Microsoft Edge  273.2 MiB         3.9 GiB  21.5%        98
+38372  1(launchd)  Google Chrome   178.6 MiB         1.4 GiB   7.9%        28
+52183  1(launchd)  claude           93.4 MiB       911.9 MiB   4.9%         4
+                   TOTAL                             6.2 GiB  34.3%
 ```
 
 #### 5. JSON output (`--json`) piped to `jq`
@@ -227,7 +233,7 @@ $ pspp --json --min 1G | jq '.rows[] | {pid, comm, agg_gib: (.agg / 1073741824 *
 }
 ```
 
-Each JSON object in `rows` contains `{ pid, ppid, comm, own, agg, children, descendants, approximate }` with raw byte integers alongside top-level `mem`, `agg` (the aggregation mode: `rollup` or `flat`) and `total`.
+Each JSON object in `rows` contains `{ pid, ppid, comm, own, agg, pct, children, descendants, approximate }` with raw byte integers (`pct` = `agg` ÷ total RAM as a percentage with one decimal) alongside top-level `mem`, `agg` (the aggregation mode: `rollup` or `flat`) and `total`.
 
 #### 6. Grep-style exit codes in shell scripts
 

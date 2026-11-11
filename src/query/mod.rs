@@ -66,6 +66,7 @@ struct JsonRow {
     comm: String,
     own: u64,
     agg: u64,
+    pct: f64,
     children: usize,
     descendants: usize,
     approximate: bool,
@@ -87,9 +88,9 @@ pub fn run_query(snapshot: &Snapshot, opts: &QueryOpts) -> QueryResult {
     let (rows, total) = matching_rows(snapshot, opts);
     let row_count = rows.len();
     let output = if opts.json {
-        render_json(rows, total, opts)
+        render_json(rows, total, opts, snapshot.total_mem)
     } else {
-        render_plain(&rows, total, opts)
+        render_plain(&rows, total, opts, snapshot.total_mem)
     };
     QueryResult { output, row_count }
 }
@@ -235,18 +236,23 @@ fn compare_rows(left: &RenderRow, right: &RenderRow, sort_by: SortBy) -> Orderin
     }
 }
 
-fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts) -> String {
+fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts, ram: u64) -> String {
+    const COLS: usize = 7;
+    // PID, PARENT, COMM are left-aligned; the numeric columns are right-aligned.
+    const LEFT: [bool; COLS] = [true, true, true, false, false, false, false];
+
     let agg_header = format!("{} Σ ({})", opts.mem_kind.label(), agg_name(opts.agg_mode));
-    let header = [
-        "PID",
-        "PARENT",
-        "COMM",
-        "OWN",
-        agg_header.as_str(),
-        "CHILDREN",
+    let header: [String; COLS] = [
+        "PID".to_owned(),
+        "PARENT".to_owned(),
+        "COMM".to_owned(),
+        "OWN".to_owned(),
+        agg_header,
+        "%".to_owned(),
+        "CHILDREN".to_owned(),
     ];
 
-    let rendered_rows: Vec<[String; 6]> = rows
+    let rendered_rows: Vec<[String; COLS]> = rows
         .iter()
         .map(|row| {
             let parent = if row.ppid == 0 {
@@ -271,6 +277,7 @@ fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts) -> String {
                 row.comm.clone(),
                 own,
                 agg,
+                format_pct(row.agg, ram),
                 row.children.to_string(),
             ]
         })
@@ -280,85 +287,47 @@ fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts) -> String {
     if total.approximate {
         total_formatted.push('~');
     }
-    let total_row = [
+    let total_row: [String; COLS] = [
         String::new(),
         String::new(),
         "TOTAL".to_owned(),
         String::new(),
         total_formatted,
+        format_pct(total.bytes, ram),
         String::new(),
     ];
 
-    let mut widths = [
-        header[0].len(),
-        header[1].len(),
-        header[2].len(),
-        header[3].len(),
-        header[4].len(),
-        header[5].len(),
-    ];
-
-    for row in &rendered_rows {
+    let mut widths = [0_usize; COLS];
+    for row in std::iter::once(&header)
+        .chain(rendered_rows.iter())
+        .chain(std::iter::once(&total_row))
+    {
         for (idx, cell) in row.iter().enumerate() {
-            widths[idx] = widths[idx].max(cell.len());
+            widths[idx] = widths[idx].max(cell.chars().count());
         }
     }
-    for (idx, cell) in total_row.iter().enumerate() {
-        widths[idx] = widths[idx].max(cell.len());
-    }
+
+    let format_line = |cells: &[String; COLS]| -> String {
+        let line = cells
+            .iter()
+            .enumerate()
+            .map(|(idx, cell)| {
+                if LEFT[idx] {
+                    format!("{cell:<w$}", w = widths[idx])
+                } else {
+                    format!("{cell:>w$}", w = widths[idx])
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        line.trim_end().to_owned()
+    };
 
     let mut lines = Vec::with_capacity(rendered_rows.len().saturating_add(3));
-    lines.push(format!(
-        "{:<pid_w$}  {:<parent_w$}  {:<comm_w$}  {:>own_w$}  {:>agg_w$}  {:>children_w$}",
-        header[0],
-        header[1],
-        header[2],
-        header[3],
-        header[4],
-        header[5],
-        pid_w = widths[0],
-        parent_w = widths[1],
-        comm_w = widths[2],
-        own_w = widths[3],
-        agg_w = widths[4],
-        children_w = widths[5],
-    ));
-    let full_width = widths.iter().sum::<usize>() + 10;
-    lines.push("-".repeat(full_width));
-
-    for row in &rendered_rows {
-        lines.push(format!(
-            "{:<pid_w$}  {:<parent_w$}  {:<comm_w$}  {:>own_w$}  {:>agg_w$}  {:>children_w$}",
-            row[0],
-            row[1],
-            row[2],
-            row[3],
-            row[4],
-            row[5],
-            pid_w = widths[0],
-            parent_w = widths[1],
-            comm_w = widths[2],
-            own_w = widths[3],
-            agg_w = widths[4],
-            children_w = widths[5],
-        ));
-    }
-    lines.push(format!(
-        "{:<pid_w$}  {:<parent_w$}  {:<comm_w$}  {:>own_w$}  {:>agg_w$}  {:>children_w$}",
-        total_row[0],
-        total_row[1],
-        total_row[2],
-        total_row[3],
-        total_row[4],
-        total_row[5],
-        pid_w = widths[0],
-        parent_w = widths[1],
-        comm_w = widths[2],
-        own_w = widths[3],
-        agg_w = widths[4],
-        children_w = widths[5],
-    ));
-
+    lines.push(format_line(&header));
+    lines.push("-".repeat(widths.iter().sum::<usize>() + 2 * (COLS - 1)));
+    lines.extend(rendered_rows.iter().map(&format_line));
+    lines.push(format_line(&total_row));
     lines.join("\n")
 }
 
@@ -369,7 +338,7 @@ fn agg_name(mode: AggMode) -> &'static str {
     }
 }
 
-fn render_json(rows: Vec<RenderRow>, total: Total, opts: &QueryOpts) -> String {
+fn render_json(rows: Vec<RenderRow>, total: Total, opts: &QueryOpts, ram: u64) -> String {
     let payload = JsonOutput {
         mem: opts.mem_kind.label().to_lowercase(),
         agg: agg_name(opts.agg_mode),
@@ -381,6 +350,7 @@ fn render_json(rows: Vec<RenderRow>, total: Total, opts: &QueryOpts) -> String {
                 comm: row.comm,
                 own: row.own,
                 agg: row.agg,
+                pct: pct_tenths(row.agg, ram) as f64 / 10.0,
                 children: row.children,
                 descendants: row.descendants,
                 approximate: row.approximate,
@@ -446,6 +416,21 @@ pub fn parse_size(value: &str) -> Result<u64, String> {
     Ok(bytes.round() as u64)
 }
 
+/// `value / total` as a percentage with one decimal (`12.3%`); not capped at 100 because Σ of
+/// per-process values can exceed physical RAM. Capped at `999.9%` for column width.
+pub fn format_pct(value: u64, total: u64) -> String {
+    let tenths = pct_tenths(value, total);
+    format!("{}.{}%", tenths / 10, tenths % 10)
+}
+
+fn pct_tenths(value: u64, total: u64) -> u64 {
+    if total == 0 {
+        return 0;
+    }
+    let tenths = (u128::from(value) * 1000 + u128::from(total) / 2) / u128::from(total);
+    u64::try_from(tenths.min(9999)).unwrap_or(9999)
+}
+
 pub fn format_size(bytes: u64, base10: bool) -> String {
     let (base, units) = if base10 {
         (
@@ -479,7 +464,7 @@ mod tests {
 
     use serde_json::Value;
 
-    use super::{format_size, parse_size, run_query, QueryOpts};
+    use super::{format_pct, format_size, parse_size, run_query, QueryOpts};
     use crate::collect::{MemSet, ProcRec, Snapshot};
     use crate::model::{AggMode, MemKind, SortBy};
 
@@ -504,8 +489,45 @@ mod tests {
         Snapshot {
             procs,
             total_mem: 0,
+            used_mem: 0,
             taken_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn format_pct_rounds_to_one_decimal_and_does_not_cap_at_100() {
+        assert_eq!(format_pct(0, 100), "0.0%");
+        assert_eq!(format_pct(1, 3), "33.3%");
+        assert_eq!(format_pct(1, 8), "12.5%");
+        assert_eq!(format_pct(3, 2), "150.0%");
+        assert_eq!(format_pct(5, 0), "0.0%");
+        assert_eq!(format_pct(u64::MAX, 1), "999.9%");
+    }
+
+    #[test]
+    fn plain_and_json_outputs_carry_pct_of_total_ram() {
+        let mut snap = snapshot(vec![proc(1, 0, "init", 250), proc(2, 1, "child", 100)]);
+        snap.total_mem = 1000;
+        let plain = run_query(&snap, &QueryOpts::default()).output;
+        let header = plain.lines().next().unwrap_or_default();
+        assert!(
+            header.contains("RSS Σ (rollup)") && header.contains('%'),
+            "{header}"
+        );
+        assert!(plain.contains("35.0%"), "{plain}");
+        assert!(plain.contains("10.0%"), "{plain}");
+
+        let json = run_query(
+            &snap,
+            &QueryOpts {
+                json: true,
+                ..QueryOpts::default()
+            },
+        )
+        .output;
+        let parsed: Value = serde_json::from_str(&json).expect("json");
+        assert_eq!(parsed["rows"][0]["pct"], 35.0);
+        assert_eq!(parsed["rows"][1]["pct"], 10.0);
     }
 
     #[test]

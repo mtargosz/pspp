@@ -133,6 +133,19 @@ pub fn build_help_lines(theme: &Theme, width: usize) -> Vec<Line<'static>> {
         );
     }
 
+    push_section_header(&mut lines, theme, "why totals can exceed RAM");
+    push_wrapped_paragraph(
+        &mut lines,
+        theme,
+        "The graph and the `used X / Y` figure show real system memory in use. The `Σ` figure \
+         adds up one number per process, and the same shared page (libraries, frameworks) is \
+         counted once for every process that maps it, so Σ RSS can be larger than the RAM you \
+         have. On macOS, footprint also counts compressed memory, which no longer occupies its \
+         full size in RAM. The % column is a row's Σ divided by total RAM and can exceed 100%.",
+        width,
+        theme.main_fg,
+    );
+
     push_section_header(&mut lines, theme, "aggregation modes");
     push_wrapped_paragraph(
         &mut lines,

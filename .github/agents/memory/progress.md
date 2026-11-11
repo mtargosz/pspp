@@ -23,7 +23,7 @@
 - [x] 14. docs — README, --help, man page
 - [x] M15 fix(collect): correct ppid on macOS without root
 - [x] M16 feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10
-- [ ] M17 feat(ui): honest memory graph, used/total status, % column
+- [x] M17 feat(ui): honest memory graph, used/total status, % column
 - [ ] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
 - [ ] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
 - [ ] M20 feat(options): btop General parity and global keys
@@ -279,6 +279,13 @@
 - Config persistence diffs initial vs final settings (`apply_changed_settings_to_config`).
 - Tests: `is_query_mode_requested` unit tests (incl. `--mem footprint` is not query mode), config-diff test,
   3 integration tests (JSON `mem`/`agg`, header, `PSPP_CONFIG_DIR` isolation). README, man page, `--help` updated.
+
+### 2026-11-11 — M17 (feat(ui): honest memory graph, used/total status, % column)
+- `Snapshot::used_mem` (macOS `used_memory()`, Linux `MemTotal-MemAvailable` via tested `parse_meminfo`).
+- `mem` box plots `used_mem / total_mem`; summary `used X / Y ■■■ NN%  Σ RSS Z`; status line `used X / Y`.
+- `%` column in TUI + plain query output (`format_pct`) and `pct` in JSON rows; plain renderer rewritten
+  column-generic (also fixes width miscount of `Σ`). Help gained a "why totals can exceed RAM" section.
+- Linux target installed; `cargo check --target x86_64-unknown-linux-gnu` clean.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.

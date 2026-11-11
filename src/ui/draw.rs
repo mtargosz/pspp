@@ -6,11 +6,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
-use crate::query::format_size;
+use crate::query::{format_pct, format_size};
 use crate::ui::app::{App, AppMode, DisplayRow};
 use crate::ui::graph;
 use crate::ui::help;
 
+const PCT_COL_WIDTH: u16 = 6;
 const MEM_BOX_HEIGHT: u16 = 6;
 const MEM_BOX_MIN_INNER_HEIGHT: u16 = 12;
 
@@ -59,8 +60,7 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
         render_mem_box(frame, mem_area, app);
     }
 
-    let total_used = app.mem_total_used();
-    let total_pct = percentage(total_used, app.snapshot.total_mem);
+    let used_pct = percentage(app.mem_used(), app.snapshot.total_mem);
     let status = Line::from(
         vec![
             Span::styled(
@@ -90,10 +90,11 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
             ),
             Span::styled(
                 format!(
-                    "  total {}",
+                    "  used {} / {}",
+                    format_size(app.mem_used(), app.base10),
                     format_size(app.snapshot.total_mem, app.base10)
                 ),
-                Style::default().fg(theme.usage_color(total_pct)),
+                Style::default().fg(theme.usage_color(used_pct)),
             ),
         ]
         .into_iter()
@@ -178,7 +179,7 @@ fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
     }
 
     let width = usize::from(inner.width);
-    let used = app.mem_total_used();
+    let used = app.mem_used();
     let max = app.mem_graph_max();
     let graph_height = inner.height.saturating_sub(1);
 
@@ -198,15 +199,22 @@ fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
         frame.render_widget(Paragraph::new(lines), graph_area);
     }
 
+    // `used 12.1 GiB / 32.0 GiB ■■■■ 38%  Σ RSS 18.4 GiB`
     let pct = percentage(used, max);
-    let label = format!("{} total ", app.mem_kind.label().to_ascii_uppercase());
+    let label = "used ".to_owned();
     let used_text = format_size(used, app.base10);
     let max_text = format!(" / {} ", format_size(max, app.base10));
     let pct_text = format!(" {pct}%");
+    let sum_text = format!(
+        "  Σ {} {}",
+        app.mem_kind.label().to_ascii_uppercase(),
+        format_size(app.mem_kind_sum(), app.base10)
+    );
     let fixed = label.chars().count()
         + used_text.chars().count()
         + max_text.chars().count()
-        + pct_text.chars().count();
+        + pct_text.chars().count()
+        + sum_text.chars().count();
     let meter_width = width.saturating_sub(fixed);
 
     let mut spans = vec![
@@ -219,6 +227,10 @@ fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
         pct_text,
         Style::default().fg(theme.usage_color(pct)),
     ));
+    spans.push(Span::styled(
+        sum_text,
+        Style::default().fg(theme.color(theme.inactive_fg)),
+    ));
 
     let summary_area = Rect {
         y: inner.y + inner.height - 1,
@@ -228,7 +240,7 @@ fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(Line::from(spans)), summary_area);
 }
 
-fn render_header(frame: &mut Frame<'_>, columns: &[Rect; 6], agg_header: &str, app: &App) {
+fn render_header(frame: &mut Frame<'_>, columns: &[Rect; 7], agg_header: &str, app: &App) {
     let theme = &app.theme;
     let style = Style::default().fg(theme.color(theme.title));
 
@@ -252,18 +264,22 @@ fn render_header(frame: &mut Frame<'_>, columns: &[Rect; 6], agg_header: &str, a
         columns[3],
     );
     frame.render_widget(
+        Paragraph::new("%").style(style).alignment(Alignment::Right),
+        columns[4],
+    );
+    frame.render_widget(
         Paragraph::new("CHILDREN")
             .style(style)
             .alignment(Alignment::Right),
-        columns[4],
+        columns[5],
     );
-    frame.render_widget(Paragraph::new("METER").style(style), columns[5]);
+    frame.render_widget(Paragraph::new("METER").style(style), columns[6]);
 }
 
 fn render_body(
     frame: &mut Frame<'_>,
     body_area: Rect,
-    columns: &[Rect; 6],
+    columns: &[Rect; 7],
     app: &App,
 ) -> (usize, Vec<Option<Range<u16>>>) {
     let rows = app.rows();
@@ -331,7 +347,7 @@ fn render_body(
 fn render_row_cells(
     frame: &mut Frame<'_>,
     row: &DisplayRow,
-    columns: &[Rect; 6],
+    columns: &[Rect; 7],
     app: &App,
     max_visible_agg: u64,
     selected: bool,
@@ -347,8 +363,9 @@ fn render_row_cells(
         format_size(row.aggregated, app.base10),
         row.aggregated_approximate,
     );
+    let pct_text = format_pct(row.aggregated, app.snapshot.total_mem);
     let children_text = row.child_count.to_string();
-    let meter_width = usize::from(columns[5].width);
+    let meter_width = usize::from(columns[6].width);
 
     let own_pct = percentage(row.own, app.snapshot.total_mem);
     let agg_pct = percentage(row.aggregated, app.snapshot.total_mem);
@@ -412,6 +429,17 @@ fn render_row_cells(
     );
 
     frame.render_widget(
+        Paragraph::new(pct_text)
+            .style(if selected {
+                selected_style
+            } else {
+                Style::default().fg(theme.usage_color(agg_pct))
+            })
+            .alignment(Alignment::Right),
+        columns[4],
+    );
+
+    frame.render_widget(
         Paragraph::new(children_text)
             .style(if selected {
                 selected_style
@@ -419,7 +447,7 @@ fn render_row_cells(
                 default_style
             })
             .alignment(Alignment::Right),
-        columns[4],
+        columns[5],
     );
 
     let meter_line = meter_line(
@@ -430,7 +458,7 @@ fn render_row_cells(
         selected,
         meter_pct,
     );
-    frame.render_widget(Paragraph::new(meter_line), columns[5]);
+    frame.render_widget(Paragraph::new(meter_line), columns[6]);
 }
 
 fn meter_line(
@@ -709,6 +737,8 @@ fn build_column_layout(area: Rect, agg_header: &str) -> Vec<Rect> {
         Constraint::Length(1),
         Constraint::Length(u16::try_from(agg_len).unwrap_or(10)),
         Constraint::Length(1),
+        Constraint::Length(PCT_COL_WIDTH),
+        Constraint::Length(1),
         Constraint::Length(8),
         Constraint::Length(1),
         Constraint::Length(12),
@@ -717,7 +747,7 @@ fn build_column_layout(area: Rect, agg_header: &str) -> Vec<Rect> {
     .to_vec()
 }
 
-fn data_column_rects(columns: &[Rect]) -> [Rect; 6] {
+fn data_column_rects(columns: &[Rect]) -> [Rect; 7] {
     [
         columns[0],
         columns[2],
@@ -725,6 +755,7 @@ fn data_column_rects(columns: &[Rect]) -> [Rect; 6] {
         columns[6],
         columns[8],
         columns[10],
+        columns[12],
     ]
 }
 
@@ -802,8 +833,11 @@ mod tests {
     fn mem_box_shows_when_tall_enough_and_hides_when_short() {
         let tall = render_to_string(100, 30);
         assert!(tall.contains("╭ mem "));
-        assert!(tall.contains(" total "));
+        assert!(tall.contains("used "), "{tall}");
+        assert!(tall.contains(" / "));
+        assert!(tall.contains("Σ RSS"));
         assert!(tall.contains('%'));
+        assert!(!tall.contains(" total "));
         assert!(tall.contains("COMM"));
         assert!(tall.lines().filter(|line| line.contains("MiB")).count() > 3);
 

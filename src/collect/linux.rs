@@ -1,3 +1,6 @@
+// Compiled (for its parsers' tests) on every platform; only used at runtime on Linux.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
 use std::{fs, time::Instant};
 
 use sysinfo::System;
@@ -65,18 +68,35 @@ fn page_size_bytes() -> u64 {
     }
 }
 
-fn total_mem_bytes() -> u64 {
-    if let Ok(meminfo) = fs::read_to_string("/proc/meminfo") {
-        for line in meminfo.lines() {
-            if let Some(total) = parse_kib_field(line, "MemTotal:") {
-                return total;
-            }
+/// `(total, used)` in bytes from `/proc/meminfo` text; used = `MemTotal - MemAvailable`.
+fn parse_meminfo(contents: &str) -> Option<(u64, u64)> {
+    let mut total = None;
+    let mut available = None;
+    for line in contents.lines() {
+        if total.is_none() {
+            total = parse_kib_field(line, "MemTotal:");
         }
+        if available.is_none() {
+            available = parse_kib_field(line, "MemAvailable:");
+        }
+    }
+    let total = total?;
+    Some((total, total.saturating_sub(available?)))
+}
+
+/// `(total, used)` system memory in bytes, falling back to sysinfo.
+fn system_memory() -> (u64, u64) {
+    if let Some(parsed) = fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|contents| parse_meminfo(&contents))
+    {
+        return parsed;
     }
 
     let mut system = System::new();
     system.refresh_memory();
-    system.total_memory()
+    let total = system.total_memory();
+    (total, system.used_memory().min(total))
 }
 
 pub(crate) fn take_snapshot() -> Snapshot {
@@ -128,9 +148,36 @@ pub(crate) fn take_snapshot() -> Snapshot {
         }
     }
 
+    let (total_mem, used_mem) = system_memory();
     Snapshot {
         procs,
-        total_mem: total_mem_bytes(),
+        total_mem,
+        used_mem,
         taken_at: Instant::now(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn meminfo_used_is_total_minus_available() {
+        let text = "MemTotal:       32768 kB\nMemFree:         1000 kB\nMemAvailable:   12288 kB\n";
+        assert_eq!(parse_meminfo(text), Some((32768 * 1024, 20480 * 1024)));
+    }
+
+    #[test]
+    fn meminfo_without_available_is_rejected() {
+        assert_eq!(parse_meminfo("MemTotal: 100 kB\n"), None);
+        assert_eq!(parse_meminfo(""), None);
+    }
+
+    #[test]
+    fn meminfo_available_above_total_saturates() {
+        assert_eq!(
+            parse_meminfo("MemTotal: 1 kB\nMemAvailable: 5 kB\n"),
+            Some((1024, 0))
+        );
     }
 }
