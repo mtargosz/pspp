@@ -9,6 +9,7 @@ use ratatui::layout::Rect;
 
 use crate::collect::{self, Snapshot};
 use crate::model::{AggMode, AggregateRow, MemKind, ProcTree, SortBy, VisibleRow};
+use crate::ui::graph::{GraphSymbols, History};
 use crate::ui::theme::Theme;
 
 pub const DEFAULT_UPDATE_MS: u64 = 2_000;
@@ -52,6 +53,8 @@ pub struct App {
     pub sort_desc: bool,
     pub update_ms: u64,
     pub theme: Theme,
+    pub mem_history: History,
+    pub graph_symbols: GraphSymbols,
     pub should_quit: bool,
     pub last_tick_at: Instant,
     pub next_tick_at: Instant,
@@ -88,6 +91,8 @@ impl App {
             sort_desc: true,
             update_ms,
             theme: Theme::detect(),
+            mem_history: History::default(),
+            graph_symbols: GraphSymbols::detect(),
             should_quit: false,
             last_tick_at: now,
             next_tick_at: next_tick_deadline(now, update_ms),
@@ -104,8 +109,28 @@ impl App {
             rendered_toggle_zones: Vec::new(),
             last_click: None,
         };
+        app.record_mem_sample();
         app.rebuild_rows();
         app
+    }
+
+    /// System-wide total of the selected memory kind across all processes.
+    pub fn mem_total_used(&self) -> u64 {
+        self.snapshot
+            .procs
+            .iter()
+            .filter_map(|proc_rec| self.mem_kind.get(&proc_rec.mem))
+            .fold(0_u64, u64::saturating_add)
+    }
+
+    /// Graph scale: total physical memory.
+    pub fn mem_graph_max(&self) -> u64 {
+        self.snapshot.total_mem
+    }
+
+    fn record_mem_sample(&mut self) {
+        let used = self.mem_total_used();
+        self.mem_history.push(used);
     }
 
     pub fn poll_timeout(&self, now: Instant) -> Duration {
@@ -135,6 +160,7 @@ impl App {
             .collect();
         self.expanded = remap_expanded_set(&self.expanded, &old_pids, &new_pids);
 
+        self.record_mem_sample();
         self.rebuild_rows();
         self.last_tick_at = Instant::now();
         self.next_tick_at = next_tick_deadline(self.last_tick_at, self.update_ms);
@@ -337,6 +363,8 @@ impl App {
             .unwrap_or(0);
 
         self.mem_kind = available[next];
+        self.mem_history.clear();
+        self.record_mem_sample();
         self.rebuild_rows();
     }
 

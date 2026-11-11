@@ -33,7 +33,7 @@ src/
     draw.rs          — rounded-border frame, interactive process tree table, status+hint bars,
                        gradient-colored memory columns, btop-style meters and tree glyphs
     theme.rs         — named theme colors + 101-step gradients, 256-color fallback
-    graph.rs         — braille/block/tty history graph + ■ meter widgets (ratatui custom widgets)
+    graph.rs         — `History` ring buffer, braille/block/tty graph rendering, ■ meter spans
     menu.rs          — Esc overlay (Options/Help/Quit), Options editor, Help screens
   config.rs          — ~/.config/pspp/pspp.conf (TOML), save_on_exit
 tests/
@@ -110,3 +110,19 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - Left click marker or double-click row: toggle expand/collapse.
 - Meter scale decision: row meter fill uses `row.aggregated / max(visible aggregated)` (not system total).
   - OWN/AGG text colors still use `% of system total`.
+
+## Graphs (milestone 9)
+
+- `ui::graph::History` (cap 600) holds total memory of the current `MemKind` (sum over snapshot procs),
+  pushed once per tick by `App`; cleared and re-seeded when the kind changes. `pushed` counts samples
+  ever added so braille cell pairing is anchored to absolute sample parity (no shimmer).
+- `graph::render(&History, width, height, max, GraphSymbols, &Theme) -> Vec<Line>` (top row first).
+  - Braille: 2 samples/cell, 4 levels/row via const `BRAILLE_UP[left][right]`; newest sample is the right
+    column of the rightmost cell (an odd trailing sample repeats in both columns); left padded with blanks.
+  - Block/tty: 1 sample/cell (`BLOCK_UP` diagonal, `TTY_UP` = ` ░░▒█`).
+  - Row color = usage gradient at the row band's top pct (btop); height 1 colors each cell by its max sample.
+  - Scale `max` = system total memory (`App::mem_graph_max`); values clamp.
+- `GraphSymbols::{detect(), from_term, parse, label}`; `App.graph_symbols` is the config hook for milestone 10.
+- `graph::meter_spans(theme, width, value, scale)`: per-cell gradient `■` filled part + `meter_bg` rest.
+- Layout: status line, then rounded " mem " box (6 rows: 3 graph + 1 summary line, hidden when the inner
+  area is < 12 rows), table header, table body, hint bar.

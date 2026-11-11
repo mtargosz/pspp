@@ -13,7 +13,7 @@
 - [x] 6. tui-skeleton — ratatui shell: alt screen, mouse, tick loop, resize, quit
 - [x] 7. theme-gradients — theme struct, 101-step gradients, 256-color fallback
 - [x] 8. tree-table-ui — expand/collapse, kb+mouse nav, gradient meters, aggregation toggle
-- [ ] 9. graphs — braille history graph + meter bars (block/tty fallbacks)
+- [x] 9. graphs — braille history graph + meter bars (block/tty fallbacks)
 - [ ] 10. menus — Esc overlay, Options (General-style), config persistence
 - [ ] 11. help — plain-English memory explanations, filter (f, /)
 - [ ] 12. testing-pass — tester agent full pass
@@ -104,3 +104,19 @@
     and selection relocation logic.
 - Decision captured in architecture: expanded-set model (default all expanded), meter scaling against
   largest visible aggregate, and table hit-test cache in `App`.
+
+### 2026-11-11 — ui-stylist
+- Completed milestone 9 memory history graph + summary meters:
+  - Added `src/ui/graph.rs`: `History` ring buffer (cap 600, absolute `pushed` counter so braille
+    cell pairing stays parity-anchored while scrolling), `GraphSymbols {Braille, Block, Tty}`
+    (`TERM=linux` → Tty; `parse`/`label` ready for milestone 10), const 5×5 `BRAILLE_UP`/`BLOCK_UP`
+    tables (`[left][right]` = btop `left*5+right`) + `TTY_UP`, `row_level`/`quantize` (btop rounding,
+    0.3 bias for 1 row / 0.1 otherwise), `render()` (multi-row, newest at right edge, left padded,
+    rows colored by band-top pct as in btop), `meter_spans()` (per-cell gradient `■` meter).
+  - `App` owns `mem_history`, `graph_symbols`; samples pushed in `new()` and every `on_tick`;
+    history cleared (and re-seeded) on mem-kind change; `mem_total_used()` / `mem_graph_max()`.
+  - `draw.rs`: rounded " mem " box (6 rows) under the status line: 3 graph rows + summary line
+    `<KIND> total X / Y ■■■ NN%`. Hidden when inner height < 12.
+  - Fixed pre-existing bug from milestone 8: body rows were rendered at the header row's `y`
+    (column rects were reused unchanged), so only the header line showed row text.
+  - Tests: 11 graph unit tests + 1 `TestBackend` draw test. build/clippy/fmt/test green.

@@ -8,6 +8,10 @@ use ratatui::Frame;
 
 use crate::query::format_size;
 use crate::ui::app::{App, DisplayRow};
+use crate::ui::graph;
+
+const MEM_BOX_HEIGHT: u16 = 6;
+const MEM_BOX_MIN_INNER_HEIGHT: u16 = 12;
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let theme = app.theme.clone();
@@ -25,8 +29,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    let mem_height = if inner.height >= MEM_BOX_MIN_INNER_HEIGHT && inner.width >= 4 {
+        MEM_BOX_HEIGHT
+    } else {
+        0
+    };
     let layout = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(mem_height),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
@@ -34,9 +44,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     .split(inner);
 
     let status_area = layout[0];
-    let header_area = layout[1];
-    let body_area = layout[2];
-    let hint_area = layout[3];
+    let mem_area = layout[1];
+    let header_area = layout[2];
+    let body_area = layout[3];
+    let hint_area = layout[4];
+
+    if mem_height > 0 {
+        render_mem_box(frame, mem_area, app);
+    }
 
     let total_used = app
         .rows()
@@ -116,6 +131,72 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
     render_hint(frame, hint_area, app);
 }
 
+fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.color(theme.div_line)))
+        .title(Span::styled(
+            " mem ",
+            Style::default().fg(theme.color(theme.title)),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let width = usize::from(inner.width);
+    let used = app.mem_total_used();
+    let max = app.mem_graph_max();
+    let graph_height = inner.height.saturating_sub(1);
+
+    if graph_height > 0 {
+        let graph_area = Rect {
+            height: graph_height,
+            ..inner
+        };
+        let lines = graph::render(
+            &app.mem_history,
+            width,
+            usize::from(graph_height),
+            max,
+            app.graph_symbols,
+            theme,
+        );
+        frame.render_widget(Paragraph::new(lines), graph_area);
+    }
+
+    let pct = percentage(used, max);
+    let label = format!("{} total ", app.mem_kind.label().to_ascii_uppercase());
+    let used_text = format_size(used, false);
+    let max_text = format!(" / {} ", format_size(max, false));
+    let pct_text = format!(" {pct}%");
+    let fixed = label.chars().count()
+        + used_text.chars().count()
+        + max_text.chars().count()
+        + pct_text.chars().count();
+    let meter_width = width.saturating_sub(fixed);
+
+    let mut spans = vec![
+        Span::styled(label, Style::default().fg(theme.color(theme.inactive_fg))),
+        Span::styled(used_text, Style::default().fg(theme.usage_color(pct))),
+        Span::styled(max_text, Style::default().fg(theme.color(theme.main_fg))),
+    ];
+    spans.extend(graph::meter_spans(theme, meter_width, used, max));
+    spans.push(Span::styled(
+        pct_text,
+        Style::default().fg(theme.usage_color(pct)),
+    ));
+
+    let summary_area = Rect {
+        y: inner.y + inner.height - 1,
+        height: 1,
+        ..inner
+    };
+    frame.render_widget(Paragraph::new(Line::from(spans)), summary_area);
+}
+
 fn render_header(frame: &mut Frame<'_>, columns: &[Rect; 6], agg_header: &str, app: &App) {
     let theme = &app.theme;
     let style = Style::default().fg(theme.color(theme.title));
@@ -182,7 +263,11 @@ fn render_body(
             );
         }
 
-        render_row_cells(frame, row, columns, app, max_visible_agg, selected);
+        let row_columns = columns.map(|column| Rect {
+            y: row_rect.y,
+            ..column
+        });
+        render_row_cells(frame, row, &row_columns, app, max_visible_agg, selected);
 
         let comm_width = columns[0].width;
         let zone = row.toggle_marker.as_ref().and_then(|marker| {
@@ -437,7 +522,41 @@ pub fn meter_fill_blocks(value: u64, scale: u64, width: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::meter_fill_blocks;
+    use super::{draw, meter_fill_blocks};
+    use crate::ui::app::App;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_to_string(width: u16, height: u16) -> String {
+        let mut app = App::new(2_000);
+        app.mem_history.push(app.mem_graph_max() / 2);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn mem_box_shows_when_tall_enough_and_hides_when_short() {
+        let tall = render_to_string(100, 30);
+        assert!(tall.contains("╭ mem "));
+        assert!(tall.contains(" total "));
+        assert!(tall.contains('%'));
+        assert!(tall.contains("COMM"));
+        // Rows must render on their own lines, not on the header line.
+        assert!(tall.lines().filter(|line| line.contains("MiB")).count() > 3);
+
+        let short = render_to_string(100, 10);
+        assert!(!short.contains("╭ mem "));
+        assert!(short.contains("COMM"));
+    }
 
     #[test]
     fn meter_fill_handles_zero_and_rounding() {
