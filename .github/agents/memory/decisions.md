@@ -122,3 +122,20 @@ Per-agent models set in profile frontmatter:
 - **`clock_format`** uses `chrono` (clock+std features only), validated with `StrftimeItems` so bad
   specifiers render nothing instead of panicking. Default is empty (off).
 - Options list grew to 17 rows and now scrolls (with a scrollbar); hit rects carry the option index.
+
+## 2026-11-11 — M21
+
+- **Collection runs on a worker thread** (`collect::Collector`: `std::thread` + `mpsc`). One request in
+  flight at a time (extra requests are dropped, never queued); the UI loop calls `App::poll_snapshot()`
+  every iteration and shortens its poll timeout to 50 ms while a request is outstanding. The *first*
+  snapshot is still taken synchronously in `App::from_settings` so the first frame is populated.
+- **`take_snapshot(kind)`**: the worker receives the current `MemKind`. Linux reads `smaps_rollup` only
+  for `pss|uss|swap`; for `rss|vsz` those fields are `None` and the process is **not** approximate
+  (approximate = smaps wanted and unreadable/partial). Changing the kind requests a fresh snapshot; a
+  result for a stale kind triggers an immediate follow-up request.
+- **Linux process name** = basename of `argv[0]` from `/proc/<pid>/cmdline` (path-like first token only;
+  titles like `nginx: worker process` stay whole), falling back to `stat` comm (kernel threads).
+- **`ProcTree::build(Snapshot)` takes ownership**; the tree is the single owner of process records and of
+  `total_mem`/`used_mem`. `App` no longer stores a `Snapshot`; `query::run_query` also takes `Snapshot` by value.
+- **`Snapshot::taken_at` removed** (was dead; chosen over a "sample age" indicator — M23's choice is made here).
+- PID column width = digits of the largest pid present, min 5.

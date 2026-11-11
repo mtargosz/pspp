@@ -1,11 +1,12 @@
 // Compiled (for its parsers' tests) on every platform; only used at runtime on Linux.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
-use std::{fs, time::Instant};
+use std::fs;
 
 use sysinfo::System;
 
 use crate::collect::{parse_linux_stat_line, MemSet, ProcRec, Snapshot};
+use crate::model::MemKind;
 
 const PROC_DIR: &str = "/proc";
 
@@ -59,6 +60,37 @@ fn parse_smaps_rollup(contents: &str) -> SmapsRollup {
     SmapsRollup { pss, uss, swap }
 }
 
+/// Name from `/proc/<pid>/cmdline`: the basename of argv[0] (comm is truncated to 15 bytes).
+/// Returns `None` for empty cmdlines (kernel threads) so callers fall back to `comm`.
+fn parse_cmdline_name(raw: &[u8]) -> Option<String> {
+    let argv0 = raw.split(|byte| *byte == 0).next()?;
+    let argv0 = String::from_utf8_lossy(argv0);
+    let argv0 = argv0.trim();
+    if argv0.is_empty() {
+        return None;
+    }
+    // Only a path-like first token is reduced to its basename; titles such as
+    // "nginx: worker process" are kept whole.
+    let head = argv0.split(' ').next().unwrap_or(argv0);
+    let name = if head.contains('/') {
+        head.rsplit('/').next().unwrap_or(head)
+    } else {
+        argv0
+    };
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// A process is approximate only when a smaps-based metric was requested but its read failed
+/// or was incomplete; fields skipped on purpose (rss/vsz views) are plain `None`.
+fn smaps_approximate(wants_smaps: bool, rollup: Option<&SmapsRollup>) -> bool {
+    wants_smaps && rollup.is_none_or(|r| r.pss.is_none() || r.uss.is_none() || r.swap.is_none())
+}
+
+/// Whether the selected metric needs the (expensive) `smaps_rollup` read.
+fn needs_smaps(kind: MemKind) -> bool {
+    matches!(kind, MemKind::Pss | MemKind::Uss | MemKind::Swap)
+}
+
 fn page_size_bytes() -> u64 {
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if page_size > 0 {
@@ -99,7 +131,7 @@ fn system_memory() -> (u64, u64) {
     (total, system.used_memory().min(total))
 }
 
-pub(crate) fn take_snapshot() -> Snapshot {
+pub(crate) fn take_snapshot(kind: MemKind) -> Snapshot {
     let page_size = page_size_bytes();
     let mut procs = Vec::new();
 
@@ -121,20 +153,32 @@ pub(crate) fn take_snapshot() -> Snapshot {
                 None => continue,
             };
 
-            let rollup = fs::read_to_string(proc_dir.join("smaps_rollup"))
-                .ok()
-                .map(|content| parse_smaps_rollup(&content));
+            let wants_smaps = needs_smaps(kind);
+            let rollup = if wants_smaps {
+                fs::read_to_string(proc_dir.join("smaps_rollup"))
+                    .ok()
+                    .map(|content| parse_smaps_rollup(&content))
+            } else {
+                None
+            };
 
             let pss = rollup.as_ref().and_then(|value| value.pss);
             let uss = rollup.as_ref().and_then(|value| value.uss);
             let swap = rollup.as_ref().and_then(|value| value.swap);
 
-            let approximate = rollup.is_none() || pss.is_none() || uss.is_none() || swap.is_none();
+            // Fields that were deliberately not read are not "approximate"; only a failed or
+            // partial smaps read for a smaps-based metric is.
+            let approximate = smaps_approximate(wants_smaps, rollup.as_ref());
+
+            let comm = fs::read(proc_dir.join("cmdline"))
+                .ok()
+                .and_then(|raw| parse_cmdline_name(&raw))
+                .unwrap_or(stat.comm);
 
             procs.push(ProcRec {
                 pid: stat.pid,
                 ppid: stat.ppid,
-                comm: stat.comm,
+                comm,
                 mem: MemSet {
                     rss: stat.rss,
                     vsz: stat.vsz,
@@ -153,13 +197,102 @@ pub(crate) fn take_snapshot() -> Snapshot {
         procs,
         total_mem,
         used_mem,
-        taken_at: Instant::now(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SMAPS: &str = "\
+Rss:                1000 kB
+Pss:                 600 kB
+Pss_Dirty:            50 kB
+Pss_Anon:            111 kB
+Pss_File:            222 kB
+Pss_Shmem:           333 kB
+Shared_Clean:        100 kB
+Shared_Dirty:         10 kB
+Private_Clean:       200 kB
+Private_Dirty:       300 kB
+Swap:                 40 kB
+SwapPss:              25 kB
+";
+
+    #[test]
+    fn smaps_rollup_happy_path() {
+        let parsed = parse_smaps_rollup(SMAPS);
+        assert_eq!(parsed.pss, Some(600 * 1024));
+        assert_eq!(parsed.uss, Some((200 + 300) * 1024));
+        assert_eq!(parsed.swap, Some(40 * 1024));
+    }
+
+    #[test]
+    fn smaps_prefixed_fields_do_not_match_pss_or_swap() {
+        // Only the prefixed fields are present: they must not be mistaken for Pss:/Swap:.
+        let only_prefixed = "Pss_Anon: 111 kB\nPss_File: 222 kB\nSwapPss: 25 kB\n\
+                             Private_Clean: 1 kB\nPrivate_Dirty: 2 kB\n";
+        let parsed = parse_smaps_rollup(only_prefixed);
+        assert_eq!(parsed.pss, None);
+        assert_eq!(parsed.swap, None);
+        assert_eq!(parsed.uss, Some(3 * 1024));
+    }
+
+    #[test]
+    fn smaps_missing_private_fields_leave_uss_unknown() {
+        let parsed = parse_smaps_rollup("Pss: 10 kB\nPrivate_Clean: 5 kB\nSwap: 0 kB\n");
+        assert_eq!(parsed.pss, Some(10 * 1024));
+        assert_eq!(parsed.swap, Some(0));
+        assert_eq!(parsed.uss, None, "Private_Dirty is missing");
+        let empty = parse_smaps_rollup("");
+        assert_eq!((empty.pss, empty.uss, empty.swap), (None, None, None));
+        let junk = parse_smaps_rollup("Pss: lots kB\nSwap:\nPrivate_Clean 3 kB\n");
+        assert_eq!((junk.pss, junk.uss, junk.swap), (None, None, None));
+    }
+
+    #[test]
+    fn cmdline_name_uses_argv0_basename() {
+        let name = |raw: &[u8]| parse_cmdline_name(raw);
+        assert_eq!(
+            name(b"/usr/lib/systemd/systemd-journald\0--flag\0").as_deref(),
+            Some("systemd-journald")
+        );
+        assert_eq!(
+            name(b"nginx: worker process\0").as_deref(),
+            Some("nginx: worker process")
+        );
+        assert_eq!(
+            name(b"/usr/bin/python3 -m http.server\0").as_deref(),
+            Some("python3")
+        );
+        assert_eq!(name(b"bash\0").as_deref(), Some("bash"));
+        assert_eq!(name(b""), None, "kernel threads have no cmdline");
+        assert_eq!(name(b"\0\0"), None);
+        assert_eq!(name(b"/usr/bin/\0"), None);
+        assert_eq!(
+            name(&[0xff, 0xfe, b'x']).as_deref(),
+            Some("\u{fffd}\u{fffd}x")
+        );
+    }
+
+    #[test]
+    fn skipped_smaps_is_not_approximate_but_failed_or_partial_reads_are() {
+        let full = parse_smaps_rollup(SMAPS);
+        assert!(!smaps_approximate(false, None), "rss/vsz views never flag");
+        assert!(!smaps_approximate(true, Some(&full)));
+        assert!(smaps_approximate(true, None), "unreadable smaps_rollup");
+        let partial = parse_smaps_rollup("Pss: 1 kB\n");
+        assert!(smaps_approximate(true, Some(&partial)));
+    }
+
+    #[test]
+    fn only_smaps_kinds_request_the_expensive_read() {
+        assert!(!needs_smaps(MemKind::Rss) && !needs_smaps(MemKind::Vsz));
+        assert!(!needs_smaps(MemKind::Footprint));
+        assert!(
+            needs_smaps(MemKind::Pss) && needs_smaps(MemKind::Uss) && needs_smaps(MemKind::Swap)
+        );
+    }
 
     #[test]
     fn meminfo_used_is_total_minus_available() {

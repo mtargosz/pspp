@@ -7,7 +7,7 @@ use crossterm::event::{
 };
 use ratatui::layout::Rect;
 
-use crate::collect::{self, Snapshot};
+use crate::collect::{self, Collector, Snapshot};
 use crate::config;
 use crate::model::{AggMode, AggregateRow, MemKind, ProcTree, SortBy, VisibleRow};
 use crate::ui::clock;
@@ -285,8 +285,10 @@ pub struct DisplayRow {
 }
 
 pub struct App {
-    pub snapshot: Snapshot,
+    /// The process forest; it owns the latest snapshot's records and system memory figures.
     pub tree: ProcTree,
+    /// Background snapshot worker; `None` for apps built around injected snapshots (tests).
+    collector: Option<Collector>,
     pub agg_mode: AggMode,
     pub mem_kind: MemKind,
     pub sort_by: SortBy,
@@ -359,20 +361,25 @@ impl App {
         Self::from_settings(settings)
     }
 
+    /// Takes the first snapshot synchronously (so the first frame is populated), then hands
+    /// all further collection to a worker thread.
     pub fn from_settings(settings: UiSettings) -> Self {
-        Self::with_snapshot(collect::take_snapshot(), settings)
+        let first = collect::take_snapshot(settings.mem_kind);
+        let mut app = Self::with_snapshot(first, settings);
+        app.collector = Some(Collector::spawn());
+        app
     }
 
     /// Builds the app around an existing snapshot (deterministic tests, injected data).
     pub(crate) fn with_snapshot(snapshot: Snapshot, settings: UiSettings) -> Self {
         let update_ms = clamp_update_ms(settings.update_ms);
-        let tree = ProcTree::build(&snapshot);
+        let tree = ProcTree::build(snapshot);
         let now = Instant::now();
-        let expanded: HashSet<i32> = snapshot.procs.iter().map(|proc_rec| proc_rec.pid).collect();
+        let expanded: HashSet<i32> = tree.procs().map(|proc_rec| proc_rec.pid).collect();
 
         let mut app = Self {
-            snapshot,
             tree,
+            collector: None,
             agg_mode: settings.agg_mode,
             mem_kind: settings.mem_kind,
             sort_by: settings.sort_by,
@@ -501,21 +508,20 @@ impl App {
     /// pages are counted once per process; footprint includes compressed memory), so it is shown
     /// as a plain figure and never used as a graph or percentage scale.
     pub fn mem_kind_sum(&self) -> u64 {
-        self.snapshot
-            .procs
-            .iter()
+        self.tree
+            .procs()
             .filter_map(|proc_rec| self.mem_kind.get(&proc_rec.mem))
             .fold(0_u64, u64::saturating_add)
     }
 
     /// System-wide memory in use (what the history graph plots).
     pub fn mem_used(&self) -> u64 {
-        self.snapshot.used_mem
+        self.tree.used_mem()
     }
 
     /// Graph scale: total physical memory.
     pub fn mem_graph_max(&self) -> u64 {
-        self.snapshot.total_mem
+        self.tree.total_mem()
     }
 
     pub fn menu_buttons() -> &'static [MenuButton] {
@@ -647,40 +653,56 @@ impl App {
         } else {
             remaining_until_tick(now, self.next_tick_at)
         };
-        if clock::needs_second_resolution(&self.clock_format) {
+        let mut wait = if clock::needs_second_resolution(&self.clock_format) {
             tick_wait.min(Duration::from_secs(1))
         } else {
             tick_wait
+        };
+        // While the worker is collecting, wake often enough to pick the result up promptly.
+        if self.collector.as_ref().is_some_and(Collector::is_busy) {
+            wait = wait.min(Duration::from_millis(50));
         }
+        wait
     }
 
     pub fn should_tick(&self, now: Instant) -> bool {
         !self.ticks_paused() && now >= self.next_tick_at
     }
 
+    /// Schedules the next tick and asks the worker for a fresh snapshot; never blocks on I/O.
     pub fn on_tick(&mut self) {
-        let old_pids: HashSet<i32> = self
-            .snapshot
-            .procs
-            .iter()
-            .map(|proc_rec| proc_rec.pid)
-            .collect();
+        self.last_tick_at = Instant::now();
+        self.next_tick_at = next_tick_deadline(self.last_tick_at, self.update_ms);
+        self.request_refresh();
+    }
 
-        self.snapshot = collect::take_snapshot();
-        self.tree = ProcTree::build(&self.snapshot);
+    fn request_refresh(&mut self) {
+        let kind = self.mem_kind;
+        if let Some(collector) = self.collector.as_mut() {
+            collector.request(kind);
+        }
+    }
 
-        let new_pids: HashSet<i32> = self
-            .snapshot
-            .procs
-            .iter()
-            .map(|proc_rec| proc_rec.pid)
-            .collect();
+    /// Applies a finished background snapshot, if any. Called every loop iteration.
+    pub fn poll_snapshot(&mut self) {
+        let Some((kind, snapshot)) = self.collector.as_mut().and_then(Collector::try_take) else {
+            return;
+        };
+        self.apply_snapshot(snapshot);
+        // The metric changed while this snapshot was being collected: fetch the right one.
+        if kind != self.mem_kind {
+            self.request_refresh();
+        }
+    }
+
+    pub(crate) fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        let old_pids: HashSet<i32> = self.tree.procs().map(|proc_rec| proc_rec.pid).collect();
+        self.tree = ProcTree::build(snapshot);
+        let new_pids: HashSet<i32> = self.tree.procs().map(|proc_rec| proc_rec.pid).collect();
         self.expanded = remap_expanded_set(&self.expanded, &old_pids, &new_pids);
 
         self.record_mem_sample();
         self.rebuild_rows();
-        self.last_tick_at = Instant::now();
-        self.next_tick_at = next_tick_deadline(self.last_tick_at, self.update_ms);
     }
 
     pub fn on_key(&mut self, key_event: KeyEvent) {
@@ -1324,6 +1346,8 @@ impl App {
         }
 
         self.mem_kind = cycle_mem_kind_value(self.mem_kind, delta, &available);
+        // Platforms that read metric-specific data lazily need a fresh snapshot for the new kind.
+        self.request_refresh();
         self.rebuild_rows();
     }
 
@@ -1463,7 +1487,7 @@ impl App {
             return;
         }
         let direct = self.tree.filter_match_set(&self.filter_committed).direct;
-        let hop_limit = self.snapshot.procs.len();
+        let hop_limit = self.tree.proc_count();
         for pid in direct {
             let mut current = self.tree.parent_pid(pid);
             let mut hops = 0;
@@ -1889,7 +1913,6 @@ mod tests {
             procs,
             total_mem: 1_000_000,
             used_mem: 500_000,
-            taken_at: Instant::now(),
         };
         App::with_snapshot(snapshot, UiSettings::default())
     }
@@ -2146,7 +2169,6 @@ mod tests {
                 procs: Vec::new(),
                 total_mem: 1,
                 used_mem: 0,
-                taken_at: Instant::now(),
             },
             settings.clone(),
         );
@@ -2354,5 +2376,114 @@ mod tests {
         app.option_selected = 16;
         assert_eq!(app.option_scroll_for(5), 12);
         assert_eq!(app.option_scroll_for(100), 0, "everything fits");
+    }
+
+    fn snapshot_of(pids: &[i32]) -> Snapshot {
+        Snapshot {
+            procs: pids
+                .iter()
+                .map(|&pid| ProcRec {
+                    pid,
+                    ppid: 0,
+                    comm: format!("p{pid}"),
+                    mem: MemSet::default(),
+                })
+                .collect(),
+            total_mem: 100,
+            used_mem: 10,
+        }
+    }
+
+    fn wait_for_snapshot(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app.collector.as_ref().is_some_and(|c| c.is_busy()) {
+            app.poll_snapshot();
+            assert!(Instant::now() < deadline, "worker never answered");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        app.poll_snapshot();
+    }
+
+    #[test]
+    fn tick_requests_in_the_background_and_poll_applies_the_result() {
+        let mut app = filter_app();
+        assert_eq!(app.tree.proc_count(), 5);
+        app.collector = Some(crate::collect::Collector::spawn_with(|_| {
+            std::thread::sleep(Duration::from_millis(60));
+            snapshot_of(&[1, 2])
+        }));
+
+        let started = Instant::now();
+        app.on_tick();
+        assert!(
+            started.elapsed() < Duration::from_millis(40),
+            "tick must not block on I/O"
+        );
+        assert_eq!(
+            app.tree.proc_count(),
+            5,
+            "old data stays until the worker answers"
+        );
+        assert!(app.poll_timeout(Instant::now()) <= Duration::from_millis(50));
+
+        wait_for_snapshot(&mut app);
+        assert_eq!(app.tree.proc_count(), 2);
+        let mut shown = pids(&app);
+        shown.sort_unstable();
+        assert_eq!(shown, vec![1, 2]);
+        assert_eq!(app.mem_used(), 10);
+    }
+
+    #[test]
+    fn changing_the_memory_kind_requests_a_snapshot_for_the_new_kind() {
+        use std::sync::{Arc, Mutex};
+        let seen: Arc<Mutex<Vec<MemKind>>> = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        let mut app = filter_app();
+        app.mem_kind = MemKind::Rss;
+        app.collector = Some(crate::collect::Collector::spawn_with(move |kind| {
+            std::thread::sleep(Duration::from_millis(30));
+            if let Ok(mut log) = log.lock() {
+                log.push(kind);
+            }
+            snapshot_of(&[1])
+        }));
+
+        app.on_tick(); // request in flight for Rss
+        press(&mut app, KeyCode::Char('m')); // kind changes mid-flight
+        let new_kind = app.mem_kind;
+        assert_ne!(new_kind, MemKind::Rss);
+        wait_for_snapshot(&mut app); // stale Rss result applied, follow-up requested
+        wait_for_snapshot(&mut app);
+
+        let seen = seen.lock().map(|log| log.clone()).unwrap_or_default();
+        assert_eq!(seen, vec![MemKind::Rss, new_kind]);
+    }
+
+    #[test]
+    fn apply_snapshot_keeps_collapsed_nodes_and_adds_new_ones_expanded() {
+        let mut app = filter_app();
+        app.expanded.remove(&1);
+        app.rebuild_rows();
+        let mut next = Snapshot {
+            procs: filter_app().tree.procs().cloned().collect(),
+            total_mem: 100,
+            used_mem: 50,
+        };
+        next.procs.push(ProcRec {
+            pid: 6,
+            ppid: 5,
+            comm: "newbie".into(),
+            mem: MemSet::default(),
+        });
+        app.apply_snapshot(next);
+
+        assert!(
+            !app.expanded.contains(&1),
+            "user's collapse survives a refresh"
+        );
+        assert!(app.expanded.contains(&6), "new pids start expanded");
+        assert_eq!(app.mem_used(), 50);
+        assert_eq!(app.mem_history.pushed_count(), 2);
     }
 }

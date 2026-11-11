@@ -82,6 +82,7 @@ pub fn run_tui(
 
     while !app.should_quit {
         sync_mouse_capture(&mut mouse_captured, app.mouse_enabled())?;
+        app.poll_snapshot();
         terminal.draw(|frame| draw::draw(frame, &mut app))?;
 
         let timeout = app.poll_timeout(Instant::now());

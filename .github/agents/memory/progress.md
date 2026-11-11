@@ -27,7 +27,7 @@
 - [x] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
 - [x] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
 - [x] M20 feat(options): btop General parity and global keys
-- [ ] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
+- [x] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
 - [ ] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
 - [ ] M23 refactor: single source of truth for enums; docs pass
 
@@ -312,12 +312,19 @@
   option editors, theme cycling (temp dir, no env races), draw (clock, square corners, scrolling options).
 - Deps: added `chrono` (`default-features = false`, `clock`, `std`).
 
+### 2026-11-11 — M21 (perf(collect): background collection; lazy smaps_rollup; tree owns snapshot)
+- `collect::Collector` worker (tested with an injected source: non-blocking request, single in-flight,
+  kind forwarded); `App::{on_tick, poll_snapshot, apply_snapshot}`; UI loop polls the channel.
+- Linux: lazy `smaps_rollup` by kind, argv[0]-basename names, `parse_smaps_rollup`/`parse_cmdline_name`/
+  `smaps_approximate` unit tests (linux module compiles under `cfg(test)` everywhere).
+- `ProcTree::build(Snapshot)` owns records (`procs()`, `proc_count()`, `max_pid()`, `total_mem()`, `used_mem()`);
+  per-tick `ProcRec` clone gone. `Snapshot::taken_at` removed. PID column sized from the largest pid.
+- Removed from deferred notes: tree clone, dead `taken_at`.
+
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
 
 ## Review notes (deferred, 2026-11-11 reviewer)
-- `ProcTree::build` clones every `ProcRec` while `App` also keeps the snapshot (≈2× process memory per
-  tick). Could borrow or move the snapshot into the tree.
 - Config save rewrites the file: user comments and unknown keys are dropped.
 - Menu is a simplified btop menu (no ASCII-art banner, no 80x24 minimum-size message).
 - `ProcTree::sorted_pids` (Comm arm case-sensitive) is only used by tests; `pub mod model` in

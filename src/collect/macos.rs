@@ -1,8 +1,9 @@
-use std::{collections::HashMap, mem::MaybeUninit, time::Instant};
+use std::{collections::HashMap, mem::MaybeUninit};
 
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
 use crate::collect::{MemSet, ProcRec, Snapshot};
+use crate::model::MemKind;
 
 fn pid_to_i32(pid: Pid) -> i32 {
     i32::try_from(pid.as_u32()).unwrap_or_default()
@@ -102,7 +103,8 @@ fn read_kern_procs() -> Vec<KernProc> {
     Vec::new()
 }
 
-pub(crate) fn take_snapshot() -> Snapshot {
+/// `kind` is accepted for API parity with Linux; `proc_pid_rusage` is cheap enough to always read.
+pub(crate) fn take_snapshot(_kind: MemKind) -> Snapshot {
     let mut system = System::new();
     system.refresh_memory();
     system.refresh_processes_specifics(
@@ -148,7 +150,6 @@ pub(crate) fn take_snapshot() -> Snapshot {
         procs,
         total_mem: system.total_memory(),
         used_mem: system.used_memory().min(system.total_memory()),
-        taken_at: Instant::now(),
     }
 }
 
@@ -158,7 +159,7 @@ mod tests {
 
     #[test]
     fn own_ppid_matches_getppid() {
-        let snapshot = take_snapshot();
+        let snapshot = take_snapshot(MemKind::Footprint);
         let me = i32::try_from(std::process::id()).unwrap_or(i32::MAX);
         let rec = snapshot.procs.iter().find(|p| p.pid == me);
         assert_eq!(rec.map(|p| p.ppid), Some(unsafe { libc::getppid() }));
@@ -174,7 +175,7 @@ mod tests {
 
     #[test]
     fn few_processes_are_parentless() {
-        let snapshot = take_snapshot();
+        let snapshot = take_snapshot(MemKind::Footprint);
         let orphans = snapshot.procs.iter().filter(|p| p.ppid == 0).count();
         assert!(orphans <= 4, "{orphans} processes have ppid 0");
     }

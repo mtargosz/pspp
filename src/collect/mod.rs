@@ -1,10 +1,13 @@
 //! Cross-platform process and memory snapshot collection (macOS and Linux).
 
-use std::time::Instant;
-
 // Compiled in tests on every platform so the Linux parsers can be unit-tested on macOS.
 #[cfg(any(target_os = "linux", test))]
 mod linux;
+mod worker;
+
+pub use worker::Collector;
+
+use crate::model::MemKind;
 #[cfg(target_os = "macos")]
 mod macos;
 
@@ -33,7 +36,6 @@ pub struct Snapshot {
     pub total_mem: u64,
     /// System-wide memory in use (macOS: `used_memory()`; Linux: `MemTotal - MemAvailable`).
     pub used_mem: u64,
-    pub taken_at: Instant,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -76,23 +78,25 @@ pub(crate) fn parse_linux_stat_line(line: &str, page_size: u64) -> Option<LinuxS
     })
 }
 
+/// Takes one snapshot. `kind` is the memory metric the caller will display: expensive
+/// per-process reads (Linux `smaps_rollup`) only happen for the kinds that need them, and the
+/// remaining fields stay `None` without flagging the process as approximate.
 #[cfg(target_os = "macos")]
-pub fn take_snapshot() -> Snapshot {
-    macos::take_snapshot()
+pub fn take_snapshot(kind: MemKind) -> Snapshot {
+    macos::take_snapshot(kind)
 }
 
 #[cfg(target_os = "linux")]
-pub fn take_snapshot() -> Snapshot {
-    linux::take_snapshot()
+pub fn take_snapshot(kind: MemKind) -> Snapshot {
+    linux::take_snapshot(kind)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub fn take_snapshot() -> Snapshot {
+pub fn take_snapshot(_kind: MemKind) -> Snapshot {
     Snapshot {
         procs: Vec::new(),
         total_mem: 0,
         used_mem: 0,
-        taken_at: Instant::now(),
     }
 }
 
@@ -120,7 +124,7 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn snapshot_contains_self_process() {
-        let snapshot = take_snapshot();
+        let snapshot = take_snapshot(MemKind::Rss);
         let self_pid = i32::try_from(std::process::id()).unwrap_or(i32::MAX);
 
         assert!(!snapshot.procs.is_empty());

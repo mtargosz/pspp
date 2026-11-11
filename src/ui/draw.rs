@@ -67,11 +67,11 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
         render_mem_box(frame, mem_area, app);
     }
 
-    let used_pct = percentage(app.mem_used(), app.snapshot.total_mem);
+    let used_pct = percentage(app.mem_used(), app.tree.total_mem());
     let status = Line::from(
         vec![
             Span::styled(
-                format!("{} procs  ", app.snapshot.procs.len()),
+                format!("{} procs  ", app.tree.proc_count()),
                 Style::default().fg(theme.color(theme.main_fg)),
             ),
             Span::styled("mem ", fg(theme.inactive_fg)),
@@ -99,7 +99,7 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
                 format!(
                     "  used {} / {}",
                     format_size(app.mem_used(), app.base10),
-                    format_size(app.snapshot.total_mem, app.base10)
+                    format_size(app.tree.total_mem(), app.base10)
                 ),
                 Style::default().fg(theme.usage_color(used_pct)),
             ),
@@ -136,7 +136,11 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
         }
     };
 
-    let col_layout = build_column_layout(header_area, &agg_header);
+    let col_layout = build_column_layout(
+        header_area,
+        &agg_header,
+        pid_column_width(app.tree.max_pid()),
+    );
     let data_col_rects = data_column_rects(&col_layout);
 
     render_header(frame, &data_col_rects, &agg_header, app);
@@ -372,12 +376,12 @@ fn render_row_cells(
         format_size(row.aggregated, app.base10),
         row.aggregated_approximate,
     );
-    let pct_text = format_pct(row.aggregated, app.snapshot.total_mem);
+    let pct_text = format_pct(row.aggregated, app.tree.total_mem());
     let children_text = row.child_count.to_string();
     let meter_width = usize::from(columns[6].width);
 
-    let own_pct = percentage(row.own, app.snapshot.total_mem);
-    let agg_pct = percentage(row.aggregated, app.snapshot.total_mem);
+    let own_pct = percentage(row.own, app.tree.total_mem());
+    let agg_pct = percentage(row.aggregated, app.tree.total_mem());
     let meter_pct = percentage(row.aggregated, max_visible_agg);
 
     let default_style = Style::default().fg(theme.color(theme.main_fg));
@@ -829,12 +833,18 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     }
 }
 
-fn build_column_layout(area: Rect, agg_header: &str) -> Vec<Rect> {
+/// PID column width: digits of the largest pid present, at least 5.
+fn pid_column_width(max_pid: i32) -> u16 {
+    let digits = max_pid.max(0).to_string().len();
+    u16::try_from(digits).unwrap_or(10).max(5)
+}
+
+fn build_column_layout(area: Rect, agg_header: &str, pid_width: u16) -> Vec<Rect> {
     let agg_len = agg_header.chars().count().max(10);
     Layout::horizontal([
         Constraint::Min(12),
         Constraint::Length(1),
-        Constraint::Length(6),
+        Constraint::Length(pid_width),
         Constraint::Length(1),
         Constraint::Length(10),
         Constraint::Length(1),
@@ -1018,6 +1028,45 @@ mod tests {
     }
 
     #[test]
+    fn pid_column_width_follows_the_largest_pid() {
+        assert_eq!(super::pid_column_width(0), 5);
+        assert_eq!(super::pid_column_width(1), 5);
+        assert_eq!(super::pid_column_width(99_999), 5);
+        assert_eq!(super::pid_column_width(100_000), 6);
+        assert_eq!(super::pid_column_width(4_194_304), 7, "Linux pid_max");
+        assert_eq!(super::pid_column_width(-3), 5);
+    }
+
+    #[test]
+    fn large_pids_render_without_truncation() {
+        use crate::collect::{MemSet, ProcRec, Snapshot};
+        use crate::ui::app::UiSettings;
+        let snapshot = Snapshot {
+            procs: vec![
+                ProcRec {
+                    pid: 1,
+                    ppid: 0,
+                    comm: "init".into(),
+                    mem: MemSet::default(),
+                },
+                ProcRec {
+                    pid: 4_194_303,
+                    ppid: 1,
+                    comm: "worker".into(),
+                    mem: MemSet::default(),
+                },
+            ],
+            total_mem: 1000,
+            used_mem: 10,
+        };
+        let mut app = App::with_snapshot(snapshot, UiSettings::default());
+        let mut terminal = Terminal::new(TestBackend::new(90, 12)).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let screen = screen_text(&terminal, 90, 12);
+        assert!(screen.contains("4194303"), "{screen}");
+    }
+
+    #[test]
     fn meter_fill_handles_zero_and_rounding() {
         assert_eq!(meter_fill_blocks(0, 100, 10), 0);
         assert_eq!(meter_fill_blocks(50, 100, 10), 5);
@@ -1068,7 +1117,6 @@ mod tests {
             procs,
             total_mem: 100_000,
             used_mem: 50_000,
-            taken_at: std::time::Instant::now(),
         };
         App::with_snapshot(snapshot, UiSettings::default())
     }

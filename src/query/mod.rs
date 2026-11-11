@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
-use crate::collect::{ProcRec, Snapshot};
+use crate::collect::Snapshot;
 use crate::model::{AggMode, MemKind, ProcTree, SortBy};
 
 #[derive(Clone, Debug)]
@@ -84,31 +84,26 @@ pub struct QueryResult {
     pub row_count: usize,
 }
 
-pub fn run_query(snapshot: &Snapshot, opts: &QueryOpts) -> QueryResult {
-    let (rows, total) = matching_rows(snapshot, opts);
+pub fn run_query(snapshot: Snapshot, opts: &QueryOpts) -> QueryResult {
+    let tree = ProcTree::build(snapshot);
+    let ram = tree.total_mem();
+    let (rows, total) = matching_rows(&tree, opts);
     let row_count = rows.len();
     let output = if opts.json {
-        render_json(rows, total, opts, snapshot.total_mem)
+        render_json(rows, total, opts, ram)
     } else {
-        render_plain(&rows, total, opts, snapshot.total_mem)
+        render_plain(&rows, total, opts, ram)
     };
     QueryResult { output, row_count }
 }
 
-fn matching_rows(snapshot: &Snapshot, opts: &QueryOpts) -> (Vec<RenderRow>, Total) {
-    let tree = ProcTree::build(snapshot);
+fn matching_rows(tree: &ProcTree, opts: &QueryOpts) -> (Vec<RenderRow>, Total) {
     let aggregates = tree.aggregate(opts.mem_kind, opts.agg_mode);
-    let by_pid: HashMap<i32, &ProcRec> = snapshot
-        .procs
-        .iter()
-        .map(|proc_rec| (proc_rec.pid, proc_rec))
-        .collect();
-    let allowed = allowed_pid_set(snapshot, opts.pid);
+    let allowed = allowed_pid_set(tree, opts.pid);
     let lowered_pattern = opts.pattern.as_ref().map(|value| value.to_lowercase());
 
-    let mut rows: Vec<RenderRow> = snapshot
-        .procs
-        .iter()
+    let mut rows: Vec<RenderRow> = tree
+        .procs()
         .filter(|proc_rec| allowed.contains(&proc_rec.pid))
         .filter(|proc_rec| pattern_matches(&proc_rec.comm, lowered_pattern.as_deref()))
         .filter_map(|proc_rec| {
@@ -117,8 +112,8 @@ fn matching_rows(snapshot: &Snapshot, opts: &QueryOpts) -> (Vec<RenderRow>, Tota
                 return None;
             }
 
-            let parent_comm = by_pid
-                .get(&proc_rec.ppid)
+            let parent_comm = tree
+                .proc(proc_rec.ppid)
                 .map(|parent| parent.comm.clone())
                 .unwrap_or_else(|| "-".to_owned());
 
@@ -141,7 +136,7 @@ fn matching_rows(snapshot: &Snapshot, opts: &QueryOpts) -> (Vec<RenderRow>, Tota
     if let Some(top) = opts.top {
         rows.truncate(top);
     }
-    let total = distinct_total(&tree, &rows, opts.agg_mode);
+    let total = distinct_total(tree, &rows, opts.agg_mode);
     (rows, total)
 }
 
@@ -171,42 +166,37 @@ fn distinct_total(tree: &ProcTree, rows: &[RenderRow], agg_mode: AggMode) -> Tot
         })
 }
 
-fn allowed_pid_set(snapshot: &Snapshot, pid: Option<i32>) -> HashSet<i32> {
+fn allowed_pid_set(tree: &ProcTree, pid: Option<i32>) -> HashSet<i32> {
     match pid {
-        None => snapshot.procs.iter().map(|proc_rec| proc_rec.pid).collect(),
-        Some(root_pid) => collect_subtree_pids(snapshot, root_pid),
+        None => tree.procs().map(|proc_rec| proc_rec.pid).collect(),
+        Some(root_pid) => collect_subtree_pids(tree, root_pid),
     }
 }
 
-fn collect_subtree_pids(snapshot: &Snapshot, root_pid: i32) -> HashSet<i32> {
+/// `root_pid` plus every process whose recorded `ppid` chain leads to it (cycle-safe).
+fn collect_subtree_pids(tree: &ProcTree, root_pid: i32) -> HashSet<i32> {
+    if tree.proc(root_pid).is_none() {
+        return HashSet::new();
+    }
+
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    let mut known = HashSet::new();
-    for proc_rec in &snapshot.procs {
-        known.insert(proc_rec.pid);
+    for proc_rec in tree.procs() {
         children
             .entry(proc_rec.ppid)
             .or_default()
             .push(proc_rec.pid);
     }
 
-    if !known.contains(&root_pid) {
-        return HashSet::new();
-    }
-
     let mut seen = HashSet::new();
     let mut stack = vec![root_pid];
-
     while let Some(pid) = stack.pop() {
         if !seen.insert(pid) {
             continue;
         }
         if let Some(child_pids) = children.get(&pid) {
-            for child in child_pids {
-                stack.push(*child);
-            }
+            stack.extend(child_pids.iter().copied());
         }
     }
-
     seen
 }
 
@@ -460,8 +450,6 @@ pub fn format_size(bytes: u64, base10: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
     use serde_json::Value;
 
     use super::{format_pct, format_size, parse_size, run_query, QueryOpts};
@@ -490,7 +478,6 @@ mod tests {
             procs,
             total_mem: 0,
             used_mem: 0,
-            taken_at: Instant::now(),
         }
     }
 
@@ -508,7 +495,7 @@ mod tests {
     fn plain_and_json_outputs_carry_pct_of_total_ram() {
         let mut snap = snapshot(vec![proc(1, 0, "init", 250), proc(2, 1, "child", 100)]);
         snap.total_mem = 1000;
-        let plain = run_query(&snap, &QueryOpts::default()).output;
+        let plain = run_query(snap.clone(), &QueryOpts::default()).output;
         let header = plain.lines().next().unwrap_or_default();
         assert!(
             header.contains("RSS Σ (rollup)") && header.contains('%'),
@@ -518,7 +505,7 @@ mod tests {
         assert!(plain.contains("10.0%"), "{plain}");
 
         let json = run_query(
-            &snap,
+            snap.clone(),
             &QueryOpts {
                 json: true,
                 ..QueryOpts::default()
@@ -570,7 +557,7 @@ mod tests {
             ..QueryOpts::default()
         };
 
-        let rendered = run_query(&snap, &opts).output;
+        let rendered = run_query(snap.clone(), &opts).output;
         let parsed: Value = serde_json::from_str(&rendered).expect("query json should parse");
         let rows = parsed["rows"].as_array().expect("rows should be array");
         let total = parsed["total"].as_u64().expect("total should be u64");
@@ -599,7 +586,7 @@ mod tests {
             base10: false,
         };
 
-        let rendered = run_query(&snap, &opts).output;
+        let rendered = run_query(snap.clone(), &opts).output;
         assert!(rendered.contains("worker-alpha"));
         assert!(rendered.contains("worker-beta"));
         assert!(!rendered.contains("other"));
@@ -616,7 +603,7 @@ mod tests {
             pattern: Some("café".to_owned()),
             ..QueryOpts::default()
         };
-        let rendered = run_query(&snap, &accent_lower).output;
+        let rendered = run_query(snap.clone(), &accent_lower).output;
         assert!(rendered.contains("CAFÉ-worker"));
         assert!(!rendered.contains("école-daemon"));
 
@@ -624,7 +611,7 @@ mod tests {
             pattern: Some("ÉCOLE".to_owned()),
             ..QueryOpts::default()
         };
-        let rendered = run_query(&snap, &accent_upper).output;
+        let rendered = run_query(snap.clone(), &accent_upper).output;
         assert!(rendered.contains("école-daemon"));
         assert!(!rendered.contains("CAFÉ-worker"));
     }
@@ -636,15 +623,14 @@ mod tests {
             ..QueryOpts::default()
         };
 
-        let empty: Value = serde_json::from_str(&run_query(&snapshot(Vec::new()), &json).output)
+        let empty: Value = serde_json::from_str(&run_query(snapshot(Vec::new()), &json).output)
             .expect("empty query json should parse");
         assert_eq!(empty["rows"].as_array().map(Vec::len), Some(0));
         assert_eq!(empty["total"].as_u64(), Some(0));
 
-        let single: Value = serde_json::from_str(
-            &run_query(&snapshot(vec![proc(1, 0, "init", 500)]), &json).output,
-        )
-        .expect("single query json should parse");
+        let single: Value =
+            serde_json::from_str(&run_query(snapshot(vec![proc(1, 0, "init", 500)]), &json).output)
+                .expect("single query json should parse");
         let rows = single["rows"].as_array().expect("rows should be array");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["children"].as_u64(), Some(0));
@@ -665,7 +651,7 @@ mod tests {
             ..QueryOpts::default()
         };
 
-        let parsed: Value = serde_json::from_str(&run_query(&snap, &opts).output)
+        let parsed: Value = serde_json::from_str(&run_query(snap.clone(), &opts).output)
             .expect("cycle query json should parse");
         let pids: Vec<i64> = parsed["rows"]
             .as_array()
@@ -687,8 +673,8 @@ mod tests {
             ..QueryOpts::default()
         };
 
-        let parsed: Value =
-            serde_json::from_str(&run_query(&snap, &opts).output).expect("json should parse");
+        let parsed: Value = serde_json::from_str(&run_query(snap.clone(), &opts).output)
+            .expect("json should parse");
         assert_eq!(parsed["rows"].as_array().map(Vec::len), Some(0));
         assert_eq!(parsed["total"].as_u64(), Some(0));
     }
@@ -704,8 +690,8 @@ mod tests {
             ..QueryOpts::default()
         };
 
-        let parsed: Value =
-            serde_json::from_str(&run_query(&snap, &opts).output).expect("json should parse");
+        let parsed: Value = serde_json::from_str(&run_query(snap.clone(), &opts).output)
+            .expect("json should parse");
         assert_eq!(parsed["total"].as_u64(), Some(u64::MAX));
     }
 
@@ -724,7 +710,7 @@ mod tests {
                 pattern: pattern.map(str::to_owned),
                 ..QueryOpts::default()
             };
-            let result = run_query(&snap, &opts);
+            let result = run_query(snap.clone(), &opts);
             let parsed: Value = serde_json::from_str(&result.output).expect("json should parse");
             (result.row_count, parsed["total"].as_u64())
         };

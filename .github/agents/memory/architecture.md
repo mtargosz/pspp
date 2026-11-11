@@ -13,11 +13,14 @@ src/
                        Both modes: --mem, --agg, --sort, --base10, --update-ms (clamped), -f/--filter
                        Config saved on exit = only fields changed in the TUI (diff vs. initial settings)
   collect/
-    mod.rs           — Snapshot API: { procs: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>, total_mem, used_mem, taken_at }
+    mod.rs           — Snapshot API: { procs: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>, total_mem, used_mem };
+                       `take_snapshot(kind: MemKind)`
+    worker.rs        — `Collector`: worker thread + mpsc; `request(kind)` (one in flight), `try_take()`
                        MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
     macos.rs         — pid/ppid/p_comm from sysctl(KERN_PROC_ALL) (unprivileged) + sysinfo name/RSS/VSZ +
                        proc_pid_rusage (ri_phys_footprint); graceful fallback
-    linux.rs         — /proc/<pid>/stat (pid/ppid/comm/rss/vsz) + smaps_rollup (pss/uss/swap);
+    linux.rs         — /proc/<pid>/stat (pid/ppid/rss/vsz) + cmdline argv[0] name + smaps_rollup
+                       (pss/uss/swap, only when the requested kind needs it); /proc/meminfo used/total;
                        permission/malformed-input fallback to RSS/VSZ-only records
   model/
     mod.rs           — MemKind enum + parsing/labels/platform availability; model exports
@@ -63,7 +66,8 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 
 - All memory values in bytes internally; formatting (KiB vs KB per `base_10_sizes`) only at render.
 - Sums use u64 with saturating adds.
-- Snapshot is immutable once taken; UI never mutates it (new snapshot per tick).
+- Snapshot is immutable once taken (moved into the `ProcTree`); a worker thread produces a new one per tick
+  and the UI never blocks on collection.
 - Terminal state (alt screen, mouse, cursor) restored via RAII guard + panic hook.
 
 ## `model` public API (milestone 4)
@@ -73,7 +77,8 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - `available() -> Vec<MemKind>` (`footprint` only on macOS; `pss/uss/swap` only on Linux)
   - `label() -> &'static str`
   - `FromStr` for CLI values: `rss|vsz|footprint|pss|uss|swap`
-- `ProcTree::build(&Snapshot) -> ProcTree`
+- `ProcTree::build(Snapshot) -> ProcTree` (owns records; `procs()`, `proc()`, `proc_count()`, `max_pid()`,
+  `total_mem()`, `used_mem()`)
   - forest from pid→ppid links; orphan/self-link/cycle-safe with synthetic root semantics
 - `enum AggMode { Rollup, Flat }`
 - `ProcTree::{aggregate, rollup, flat}`
@@ -91,7 +96,7 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - `pattern` (case-insensitive substring on `comm`; `!` regex mode intentionally unsupported for now)
   - `pid` subtree filter
   - `mem_kind`, `agg_mode`, `min_bytes`, `sort_by`, `top`, `json`, `base10`
-- `query::run_query(&Snapshot, &QueryOpts) -> QueryResult { output: String, row_count: usize }`
+- `query::run_query(Snapshot, &QueryOpts) -> QueryResult { output: String, row_count: usize }`
   - plain table columns: `PID`, `PARENT`, `COMM`, `OWN`, `<MEM> Σ`, `CHILDREN` + final `TOTAL`
   - `TOTAL`/`total` counts each covered process once: rollup sums only returned rows with no returned
     ancestor; flat rows (direct children) are disjoint so all are summed. Saturating.

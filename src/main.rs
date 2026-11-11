@@ -237,10 +237,10 @@ fn parse_top(value: &str) -> Result<usize, String> {
 
 /// Returns the number of rows printed.
 fn run_query_mode(cli: &Cli) -> Result<usize, String> {
-    let snapshot = collect::take_snapshot();
     let opts = cli.to_query_opts();
+    let snapshot = collect::take_snapshot(opts.mem_kind);
 
-    let result = query::run_query(&snapshot, &opts);
+    let result = query::run_query(snapshot, &opts);
     match write_stdout_line(&result.output) {
         // `pspp | head` closing the pipe early is not an error.
         Err(err) if err.kind() != io::ErrorKind::BrokenPipe => {

@@ -59,6 +59,11 @@ impl History {
     }
 
     #[cfg(test)]
+    pub fn pushed_count(&self) -> u64 {
+        self.pushed
+    }
+
+    #[cfg(test)]
     fn clear(&mut self) {
         self.samples.clear();
         self.pushed = 0;
