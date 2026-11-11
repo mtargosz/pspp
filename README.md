@@ -44,6 +44,7 @@ The TUI renders a rounded btop-style frame with:
 
 - **Status bar** showing process count, active memory metric, aggregation mode, sort order, refresh interval, `used X / Y` system memory (gradient-coloured by used fraction), and active filter indicator.
 - **Live memory history graph** (`mem` box, automatically hidden on short terminals) of real system memory in use (`used / total`; summary line `used 12.1 GiB / 32.0 GiB ■■■■ 38%  Σ RSS 18.4 GiB`), using UTF-8 braille (`braille`), block (`block`), or ASCII (`tty`) glyphs and a 101-step grass-green → yellow → bloody-red usage gradient (`#77ca9b → #cbc06c → #dc4c4c`), with automatic 256-color fallback when `COLORTERM` is not `truecolor`/`24bit`.
+- **Context-sensitive hint bar** that follows the active mode (table, filter input, menu, options, help) and truncates to the terminal width.
 - **Expandable process tree table** with per-row `■` usage meters, `OWN`, aggregated (`<MEM> Σ`) and `%` (Σ ÷ total RAM, can exceed 100% because shared pages are counted per process) columns, child counts, and live substring filtering that preserves ancestor context.
 
 ### Key Bindings
@@ -107,6 +108,8 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `Double click row` | Expand/collapse node. |
 | `Click column header` | Sort by that column; click the active column again to reverse. |
 | `Menu click` | Click button to activate; click outside to close menu. |
+| `Options: click / wheel` | Click row to select, click the selected row to edit/advance; wheel moves the selection; click outside closes. |
+| `Help: wheel / click` | Wheel scrolls (a scrollbar shows when the text overflows); click outside closes. |
 
 ### Options & Configuration (`pspp.conf`)
 

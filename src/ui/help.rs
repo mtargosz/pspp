@@ -61,7 +61,7 @@ const MENU_KEYS: [(&str, &str); 9] = [
     ),
 ];
 
-const MOUSE_ACTIONS: [(&str, &str); 6] = [
+const MOUSE_ACTIONS: [(&str, &str); 8] = [
     ("Wheel up/down", "Scroll process rows."),
     ("Left click row", "Select row."),
     ("Left click [+]/[-]", "Expand/collapse node."),
@@ -73,6 +73,14 @@ const MOUSE_ACTIONS: [(&str, &str); 6] = [
     (
         "Menu click",
         "Click button to activate; click outside to close menu.",
+    ),
+    (
+        "Options: click / wheel",
+        "Click row to select, click the selected row to edit/advance; wheel moves; click outside closes.",
+    ),
+    (
+        "Help: wheel / click",
+        "Wheel scrolls; click outside closes.",
     ),
 ];
 

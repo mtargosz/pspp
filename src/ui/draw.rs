@@ -3,7 +3,9 @@ use std::ops::Range;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::Frame;
 
 use crate::model::SortBy;
@@ -157,17 +159,12 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn draw_overlay(frame: &mut Frame<'_>, app: &mut App) {
+    app.clear_overlay_hit_tests();
     match app.mode {
-        AppMode::Normal | AppMode::FilterInput => app.clear_menu_hit_test(),
+        AppMode::Normal | AppMode::FilterInput => {}
         AppMode::Menu => render_menu_overlay(frame, app),
-        AppMode::Options => {
-            app.clear_menu_hit_test();
-            render_options_overlay(frame, app);
-        }
-        AppMode::Help => {
-            app.clear_menu_hit_test();
-            render_help_overlay(frame, app);
-        }
+        AppMode::Options => render_options_overlay(frame, app),
+        AppMode::Help => render_help_overlay(frame, app),
     }
 }
 
@@ -501,33 +498,82 @@ fn meter_line(
     ])
 }
 
-fn render_hint(frame: &mut Frame<'_>, hint_area: Rect, app: &App) {
+/// Key hints for the current mode as `(keys, meaning)` segments, most important first.
+fn hint_segments(mode: AppMode) -> &'static [(&'static str, &'static str)] {
+    match mode {
+        AppMode::Normal => &[
+            ("↑/↓ j/k PgUp/PgDn", ""),
+            ("←/→", ""),
+            ("Space/Enter", ""),
+            ("e", "agg"),
+            ("m", "mem"),
+            ("s", "sort"),
+            ("S/r", "rev"),
+            ("f//", "filter"),
+            ("Esc", "menu"),
+            ("q", "quit"),
+        ],
+        AppMode::FilterInput => &[
+            ("type", "filter text"),
+            ("Enter", "apply"),
+            ("Esc", "cancel"),
+            ("Backspace", "delete"),
+        ],
+        AppMode::Menu => &[("↑/↓ Tab", "select"), ("Enter", "open"), ("Esc/q", "close")],
+        AppMode::Options => &[
+            ("↑/↓", "select"),
+            ("←/→", "change"),
+            ("Enter", "edit"),
+            ("click", "select/edit"),
+            ("Esc/q", "back"),
+        ],
+        AppMode::Help => &[
+            ("↑/↓ PgUp/PgDn", "scroll"),
+            ("wheel", "scroll"),
+            ("Esc/q", "back"),
+        ],
+    }
+}
+
+/// Renders as many whole hint segments as fit in `width` columns.
+fn hint_line(mode: AppMode, width: usize, app: &App) -> Line<'static> {
     let theme = &app.theme;
-    let hint = Line::from(vec![
-        Span::styled(
-            "↑/↓ j/k PgUp/PgDn Home/End g/G",
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled("  ←/→", Style::default().fg(theme.color(theme.main_fg))),
-        Span::styled(
-            "  Space/Enter",
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled(
-            "  e agg  m mem  s sort  S/r rev",
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled(
-            "  f// filter",
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled(
-            "  Esc menu",
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled("  q quit", Style::default().fg(theme.color(theme.hi_fg))),
-    ]);
-    frame.render_widget(Paragraph::new(hint), hint_area);
+    let key_style = Style::default().fg(theme.color(theme.main_fg));
+    let text_style = Style::default().fg(theme.color(theme.inactive_fg));
+    let quit_style = Style::default().fg(theme.color(theme.hi_fg));
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut used = 0_usize;
+    for (keys, meaning) in hint_segments(mode) {
+        let gap = if spans.is_empty() { 0 } else { 2 };
+        let seg_len = keys.chars().count()
+            + if meaning.is_empty() {
+                0
+            } else {
+                1 + meaning.chars().count()
+            };
+        if used + gap + seg_len > width {
+            break;
+        }
+        if gap > 0 {
+            spans.push(Span::raw("  "));
+        }
+        let is_quit = mode == AppMode::Normal && *keys == "q";
+        spans.push(Span::styled(
+            (*keys).to_owned(),
+            if is_quit { quit_style } else { key_style },
+        ));
+        if !meaning.is_empty() {
+            spans.push(Span::styled(format!(" {meaning}"), text_style));
+        }
+        used += gap + seg_len;
+    }
+    Line::from(spans)
+}
+
+fn render_hint(frame: &mut Frame<'_>, hint_area: Rect, app: &App) {
+    let line = hint_line(app.mode, usize::from(hint_area.width), app);
+    frame.render_widget(Paragraph::new(line), hint_area);
 }
 
 fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
@@ -604,7 +650,7 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
     let height = area.height.saturating_sub(4).clamp(12, 18);
     let overlay = centered_rect(area, width, height);
 
-    let theme = &app.theme;
+    let theme = app.theme.clone();
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.color(theme.div_line)))
@@ -624,6 +670,7 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
     let bottom = sections[1];
 
     let label_width = 20;
+    let mut row_rects = Vec::new();
     for (idx, key) in App::option_keys().iter().enumerate() {
         if idx >= usize::from(list_area.height) {
             break;
@@ -653,7 +700,9 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
         };
 
         frame.render_widget(Paragraph::new(line).style(style), row_rect);
+        row_rects.push(row_rect);
     }
+    app.set_options_hit_test(overlay, row_rects);
 
     let desc_area = Rect {
         x: bottom.x,
@@ -707,14 +756,34 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App) {
         return;
     }
 
+    app.set_help_hit_test(overlay);
+
     let sections = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
-    let body = sections[0];
     let footer = sections[1];
+    // The last column is reserved for the scrollbar so text never runs underneath it.
+    let columns =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).split(sections[0]);
+    let body = columns[0];
+    let bar_area = columns[1];
     let lines = help::build_help_lines(&theme, usize::from(body.width));
     app.set_help_scroll_metrics(lines.len(), usize::from(body.height));
 
     let scroll = u16::try_from(app.help_scroll()).unwrap_or(u16::MAX);
     frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), body);
+
+    if app.help_overflow() > 0 {
+        let mut bar_state =
+            ScrollbarState::new(app.help_overflow().saturating_add(1)).position(app.help_scroll());
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .style(Style::default().fg(theme.color(theme.div_line)))
+                .thumb_style(Style::default().fg(theme.color(theme.hi_fg))),
+            bar_area,
+            &mut bar_state,
+        );
+    }
 
     let footer_text = Paragraph::new("↑/↓ j/k PgUp/PgDn scroll  Esc/q back")
         .style(Style::default().fg(theme.color(theme.inactive_fg)));
@@ -816,7 +885,7 @@ pub fn meter_fill_blocks(value: u64, scale: u64, width: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{draw, meter_fill_blocks};
+    use super::{draw, hint_line, meter_fill_blocks};
     use crate::ui::app::{App, AppMode};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -884,5 +953,100 @@ mod tests {
                     .unwrap_or_else(|err| panic!("{mode:?} at {width}x{height}: {err}"));
             }
         }
+    }
+
+    fn tiny_app() -> App {
+        use crate::collect::{MemSet, ProcRec, Snapshot};
+        use crate::ui::app::UiSettings;
+
+        let procs = (1..=4)
+            .map(|pid| ProcRec {
+                pid,
+                ppid: pid - 1,
+                comm: format!("p{pid}"),
+                mem: MemSet {
+                    rss: 1000 * u64::try_from(pid).unwrap_or(1),
+                    ..MemSet::default()
+                },
+            })
+            .collect();
+        let snapshot = Snapshot {
+            procs,
+            total_mem: 100_000,
+            used_mem: 50_000,
+            taken_at: std::time::Instant::now(),
+        };
+        App::with_snapshot(snapshot, UiSettings::default())
+    }
+
+    #[test]
+    fn mouse_events_at_every_position_of_a_tiny_frame_do_not_panic() {
+        use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+        for mode in [
+            AppMode::Normal,
+            AppMode::FilterInput,
+            AppMode::Menu,
+            AppMode::Options,
+            AppMode::Help,
+        ] {
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::ScrollUp,
+                MouseEventKind::ScrollDown,
+            ] {
+                for y in 0..3 {
+                    for x in 0..10 {
+                        let mut app = tiny_app();
+                        app.mode = mode;
+                        let mut terminal =
+                            Terminal::new(TestBackend::new(10, 3)).expect("terminal");
+                        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+                        app.on_mouse(MouseEvent {
+                            kind,
+                            column: x,
+                            row: y,
+                            modifiers: KeyModifiers::NONE,
+                        });
+                        terminal
+                            .draw(|frame| draw(frame, &mut app))
+                            .unwrap_or_else(|err| panic!("{mode:?} {kind:?} at ({x},{y}): {err}"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hint_bar_depends_on_mode_and_is_truncated_to_width() {
+        let app = App::new(2_000);
+        let text = |mode, width| -> String {
+            hint_line(mode, width, &app)
+                .spans
+                .iter()
+                .map(|span| span.content.to_string())
+                .collect()
+        };
+
+        assert!(text(AppMode::Normal, 200).contains("q quit"));
+        assert!(text(AppMode::FilterInput, 200).contains("Enter apply"));
+        assert!(text(AppMode::Menu, 200).contains("Enter open"));
+        assert!(text(AppMode::Options, 200).contains("←/→ change"));
+        assert!(text(AppMode::Help, 200).contains("scroll"));
+        for mode in [
+            AppMode::Normal,
+            AppMode::FilterInput,
+            AppMode::Menu,
+            AppMode::Options,
+            AppMode::Help,
+        ] {
+            for width in 0..60 {
+                assert!(
+                    text(mode, width).chars().count() <= width,
+                    "{mode:?} {width}"
+                );
+            }
+        }
+        assert_eq!(text(AppMode::Normal, 0), "");
     }
 }

@@ -85,3 +85,12 @@ Per-agent models set in profile frontmatter:
   a new key starts ascending for COMM/PID and descending for OWN/Σ (memory columns largest-first).
   `%` sorts by the aggregated value. CHILDREN/METER are not sortable.
 - `App::with_snapshot` (pub(crate)) pulled forward from M22 so these behaviours test deterministically.
+
+## 2026-11-11 — M19
+
+- **Mouse in overlays**: Options — click row selects, click selected row activates (same as Enter), wheel
+  moves selection (clamped, no wrap), any click cancels an `update_ms` edit; Help — wheel scrolls ±3.
+  A click outside the Options or Help box closes it to the main view (`Normal`), whereas Esc steps back to
+  the menu (dismiss gesture = leave overlays entirely).
+- **Hint bar** is chosen by `AppMode` and drops whole segments that do not fit the width (never wraps).
+- Help reserves its right column for a `ratatui::widgets::Scrollbar`, drawn only when the text overflows.

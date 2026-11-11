@@ -150,6 +150,8 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 
 - App mode enum: `AppMode::{Normal, Menu, Options, Help}`.
   - `Esc` toggles menu from Normal.
+  - Mouse: Options rows/overlay and Help overlay rects are cached per frame (`set_options_hit_test`,
+    `set_help_hit_test`, `clear_overlay_hit_tests`); see decisions.md (M19) for semantics.
   - Menu keys: `↑/↓/j/k/Tab/BackTab`, `Enter/Space`, `Esc/q`; mouse click on button activates, click
     outside closes. Buttons are clipped to the bordered inner area on tiny terminals.
   - `Ctrl-C`/`Ctrl-Q` quit from every mode (checked in `App::on_key` before mode dispatch).
@@ -174,7 +176,7 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - App mode enum now includes `FilterInput` (`AppMode::{Normal, FilterInput, Menu, Options, Help}`).
 - Help overlay:
   - centered rounded box titled `" help "` with scrollable content
-  - scroll keys: `↑/↓/j/k/PgUp/PgDn`; close: `Esc`/`q`
+  - scroll keys: `↑/↓/j/k/PgUp/PgDn`/wheel; close: `Esc`/`q`/click outside; scrollbar when overflowing
   - sections rendered from `ui/help.rs` as styled `Line`s:
     - key bindings grouped by navigation/tree/display/menu
     - mouse actions

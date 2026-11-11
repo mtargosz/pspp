@@ -255,6 +255,9 @@ pub struct App {
 
     option_selected: usize,
     update_ms_editor: Option<String>,
+    option_overlay_rect: Option<Rect>,
+    option_row_rects: Vec<Rect>,
+    help_overlay_rect: Option<Rect>,
 
     help_scroll: usize,
     help_content_lines: usize,
@@ -322,6 +325,9 @@ impl App {
             menu_button_rects: [None, None, None],
             option_selected: 0,
             update_ms_editor: None,
+            option_overlay_rect: None,
+            option_row_rects: Vec::new(),
+            help_overlay_rect: None,
             help_scroll: 0,
             help_content_lines: 0,
             help_viewport_lines: 1,
@@ -540,8 +546,92 @@ impl App {
                     self.handle_menu_click(mouse_event.column, mouse_event.row);
                 }
             }
-            AppMode::Options | AppMode::Help => {}
+            AppMode::Options => self.on_mouse_options(mouse_event),
+            AppMode::Help => self.on_mouse_help(mouse_event),
         }
+    }
+
+    fn on_mouse_options(&mut self, mouse_event: MouseEvent) {
+        match mouse_event.kind {
+            MouseEventKind::ScrollUp => self.step_option_selection_clamped(-1),
+            MouseEventKind::ScrollDown => self.step_option_selection_clamped(1),
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Any click abandons an in-progress update_ms edit.
+                self.update_ms_editor = None;
+                let (column, row) = (mouse_event.column, mouse_event.row);
+                let Some(overlay) = self.option_overlay_rect else {
+                    return;
+                };
+                if !point_in_rect(overlay, column, row) {
+                    self.mode = AppMode::Normal;
+                    return;
+                }
+                let hit = self
+                    .option_row_rects
+                    .iter()
+                    .position(|rect| point_in_rect(*rect, column, row));
+                if let Some(idx) = hit {
+                    if idx == self.option_selected {
+                        self.activate_selected_option();
+                    } else {
+                        self.option_selected = idx;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_mouse_help(&mut self, mouse_event: MouseEvent) {
+        match mouse_event.kind {
+            MouseEventKind::ScrollUp => self.move_help_scroll_by(-MOUSE_SCROLL_STEP),
+            MouseEventKind::ScrollDown => self.move_help_scroll_by(MOUSE_SCROLL_STEP),
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(overlay) = self.help_overlay_rect {
+                    if !point_in_rect(overlay, mouse_event.column, mouse_event.row) {
+                        self.mode = AppMode::Normal;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn step_option_selection_clamped(&mut self, delta: isize) {
+        let max = OPTION_KEYS.len().saturating_sub(1) as isize;
+        self.option_selected = (self.option_selected as isize + delta).clamp(0, max) as usize;
+    }
+
+    /// Enter / click-on-selected: edit `update_ms`, otherwise advance the value.
+    fn activate_selected_option(&mut self) {
+        if self.selected_option_key() == OptionKey::UpdateMs {
+            self.update_ms_editor = Some(self.update_ms.to_string());
+        } else {
+            self.adjust_selected_option(1);
+        }
+    }
+
+    pub fn set_options_hit_test(&mut self, overlay: Rect, rows: Vec<Rect>) {
+        self.option_overlay_rect = Some(overlay);
+        self.option_row_rects = rows;
+    }
+
+    pub fn set_help_hit_test(&mut self, overlay: Rect) {
+        self.help_overlay_rect = Some(overlay);
+    }
+
+    /// Forgets every overlay's hit-test rects (called when no overlay is drawn).
+    pub fn clear_overlay_hit_tests(&mut self) {
+        self.clear_menu_hit_test();
+        self.option_overlay_rect = None;
+        self.option_row_rects.clear();
+        self.help_overlay_rect = None;
+    }
+
+    /// Number of rows scrolled out of view in the help overlay (for the scrollbar).
+    pub fn help_overflow(&self) -> usize {
+        self.help_content_lines
+            .saturating_sub(self.help_viewport_lines)
     }
 
     pub fn rows(&self) -> &[DisplayRow] {
@@ -676,13 +766,7 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_option_selection(1),
             KeyCode::Left => self.adjust_selected_option(-1),
             KeyCode::Right => self.adjust_selected_option(1),
-            KeyCode::Enter => {
-                if self.selected_option_key() == OptionKey::UpdateMs {
-                    self.update_ms_editor = Some(self.update_ms.to_string());
-                } else {
-                    self.adjust_selected_option(1);
-                }
-            }
+            KeyCode::Enter => self.activate_selected_option(),
             _ => {}
         }
     }
@@ -1665,5 +1749,84 @@ mod tests {
         // Clicks outside every header rect fall through to the table.
         click(&mut app, 70, 0);
         assert_eq!(app.sort_by, SortBy::Comm);
+    }
+
+    fn wheel(app: &mut App, kind: MouseEventKind) {
+        app.on_mouse(MouseEvent {
+            kind,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    fn options_app() -> App {
+        let mut app = filter_app();
+        app.mode = AppMode::Options;
+        let rows = (0..8).map(|i| Rect::new(10, 4 + i, 40, 1)).collect();
+        app.set_options_hit_test(Rect::new(8, 2, 44, 14), rows);
+        app
+    }
+
+    #[test]
+    fn options_click_selects_then_activates_and_wheel_moves() {
+        let mut app = options_app();
+        assert_eq!(app.option_selected, 0);
+
+        // Click a different row: selects it without changing the value.
+        let base10_row = 4;
+        click(&mut app, 12, 4 + base10_row);
+        assert_eq!(app.option_selected, 4);
+        assert!(!app.base10);
+
+        // Click the selected row again: advances the value (Enter semantics).
+        click(&mut app, 12, 4 + base10_row);
+        assert!(app.base10);
+
+        // Clicking the update_ms row twice opens its editor; any later click cancels it.
+        click(&mut app, 12, 4);
+        click(&mut app, 12, 4);
+        assert!(app.update_ms_editor.is_some());
+        click(&mut app, 12, 5);
+        assert!(app.update_ms_editor.is_none());
+
+        // Wheel moves the selection and clamps at both ends.
+        wheel(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.option_selected, 2);
+        for _ in 0..20 {
+            wheel(&mut app, MouseEventKind::ScrollDown);
+        }
+        assert_eq!(app.option_selected, 7);
+        for _ in 0..20 {
+            wheel(&mut app, MouseEventKind::ScrollUp);
+        }
+        assert_eq!(app.option_selected, 0);
+    }
+
+    #[test]
+    fn options_click_outside_closes_overlay() {
+        let mut app = options_app();
+        click(&mut app, 0, 0);
+        assert_eq!(app.mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn help_wheel_scrolls_and_click_outside_closes() {
+        let mut app = filter_app();
+        app.mode = AppMode::Help;
+        app.set_help_hit_test(Rect::new(4, 2, 60, 20));
+        app.set_help_scroll_metrics(100, 10);
+        assert_eq!(app.help_overflow(), 90);
+
+        wheel(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.help_scroll(), 3);
+        wheel(&mut app, MouseEventKind::ScrollUp);
+        wheel(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.help_scroll(), 0);
+
+        click(&mut app, 10, 10); // inside: stays open
+        assert_eq!(app.mode, AppMode::Help);
+        click(&mut app, 0, 0); // outside: closes
+        assert_eq!(app.mode, AppMode::Normal);
     }
 }

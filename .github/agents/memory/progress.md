@@ -25,7 +25,7 @@
 - [x] M16 feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10
 - [x] M17 feat(ui): honest memory graph, used/total status, % column
 - [x] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
-- [ ] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
+- [x] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
 - [ ] M20 feat(options): btop General parity and global keys
 - [ ] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
 - [ ] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
@@ -294,6 +294,12 @@
 - `App::with_snapshot` introduced (needed for deterministic tests; M22 builds on it).
 - 6 new app tests (ancestor expansion, collapse/toggle while filtered, Esc restore, pid double-click, header sort).
 
+### 2026-11-11 — M19 (feat(ui): mouse in Options/Help overlays; context-sensitive hint bar)
+- Options/Help mouse handling + hit-test rects in `App`; Help scrollbar; mode-specific `hint_segments`.
+- Tests: options click/wheel/outside, help wheel/outside, hint truncation/mode content, and mouse
+  Down/ScrollUp/ScrollDown at every cell of a 10×3 frame in every mode (synthetic snapshot, fast).
+- Removed from deferred notes: "No mouse handling in the Options/Help overlays".
+
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
 
@@ -302,7 +308,6 @@
   tick). Could borrow or move the snapshot into the tree.
 - Config save rewrites the file: user comments and unknown keys are dropped.
 - Menu is a simplified btop menu (no ASCII-art banner, no 80x24 minimum-size message).
-- No mouse handling in the Options/Help overlays.
 - `ProcTree::sorted_pids` (Comm arm case-sensitive) is only used by tests; `pub mod model` in
   `main.rs` keeps it from being flagged as dead. Consider removing or aligning with the UI sort.
 - Query mode would print duplicate rows if a snapshot ever contained duplicate pids (theoretical).
