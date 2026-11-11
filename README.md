@@ -21,7 +21,6 @@ cargo install --path .
 ### Platform notes
 
 - **macOS & Linux** are supported out of the box (`RSS` and `VSZ` on both; `Footprint` on macOS; `PSS`, `USS`, and `Swap` on Linux).
-- **macOS unprivileged parent visibility**: without root, `proc_pidinfo(PROC_PIDTBSDINFO)` fails for processes owned by other users, so those processes appear as top-level roots (~220 on a typical desktop) rather than under `launchd`. Run `sudo pspp` when you need the complete cross-user hierarchy.
 - **Graceful fallback**: whenever privileged per-process memory data is unreadable, `pspp` keeps the process in the tree, falls back to available counters, and marks affected sums as approximate with a trailing `~`.
 
 ---

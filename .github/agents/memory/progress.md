@@ -1,6 +1,6 @@
 # pspp — Progress board (living document)
 
-## Project status: COMPLETE
+## Project status: follow-up milestones M15–M23 in progress (see `pspp_review_prompt.md`)
 
 ## Status key: [ ] pending · [~] in progress · [x] done · [!] blocked
 
@@ -21,6 +21,15 @@
 - [x] 12. testing-pass — tester agent full pass
 - [x] 13. review-pass — reviewer agent full pass
 - [x] 14. docs — README, --help, man page
+- [x] M15 fix(collect): correct ppid on macOS without root
+- [ ] M16 feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10
+- [ ] M17 feat(ui): honest memory graph, used/total status, % column
+- [ ] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
+- [ ] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
+- [ ] M20 feat(options): btop General parity and global keys
+- [ ] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
+- [ ] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
+- [ ] M23 refactor: single source of truth for enums; docs pass
 
 ## Log
 
@@ -256,12 +265,16 @@
 - Verified `cargo build`, `cargo test` (68 unit + 5 integration), `cargo clippy --all-targets -- -D warnings`,
   `cargo fmt --check`, and `cargo doc --no-deps` all clean. Project status: COMPLETE.
 
+### 2026-11-11 — M15 (fix(collect): correct ppid on macOS without root)
+- macOS collector now takes `pid`/`ppid`/`p_comm` from `sysctl(CTL_KERN, KERN_PROC, KERN_PROC_ALL)`
+  (unprivileged, same source as `ps`); buffer sized from a first call with headroom, retried on `ENOMEM`.
+  libc has no `kinfo_proc`, so the 648-byte entry is parsed by fixed byte offsets (pid 40, comm 243,
+  e_ppid 560) with bounds-checked reads. sysinfo still supplies name/RSS/VSZ; `proc_pid_rusage` footprint.
+- Live check unprivileged: 723 procs, 1 with ppid 0 (launchd) — was ~215.
+- Tests: own ppid == `getppid()`, launchd present, ≤4 parentless, partial-trailing-entry parse.
+
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
-- macOS: without root, `proc_pidinfo(PROC_PIDTBSDINFO)` fails for other users' processes, so sysinfo
-  reports no parent and they become roots (~220 on a typical desktop). Pre-existing; only fixable with
-  elevated privileges or a different ppid source (e.g. `sysctl KERN_PROC_PID`, which works unprivileged).
-  Worth a follow-up: it distorts the rollup tree when not running as root.
 
 ## Review notes (deferred, 2026-11-11 reviewer)
 - `ProcTree::build` clones every `ProcRec` while `App` also keeps the snapshot (≈2× process memory per
