@@ -38,6 +38,12 @@ pub struct VisibleRow {
     pub is_last_child: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct FilterMatchSet {
+    pub visible: HashSet<i32>,
+    pub direct: HashSet<i32>,
+}
+
 #[derive(Clone, Debug)]
 struct ProcNode {
     rec: ProcRec,
@@ -345,6 +351,48 @@ impl ProcTree {
         }
 
         flattened
+    }
+
+    pub fn filter_match_set(&self, filter: &str) -> FilterMatchSet {
+        if filter.is_empty() {
+            let all: HashSet<i32> = self.ordered_pids.iter().copied().collect();
+            return FilterMatchSet {
+                visible: all.clone(),
+                direct: all,
+            };
+        }
+
+        let needle = filter.to_ascii_lowercase();
+        let mut direct = HashSet::new();
+        for pid in &self.ordered_pids {
+            let matches = self
+                .nodes
+                .get(pid)
+                .map(|node| node.rec.comm.to_ascii_lowercase().contains(&needle))
+                .unwrap_or(false);
+            if matches {
+                direct.insert(*pid);
+            }
+        }
+
+        let mut visible = HashSet::new();
+        for pid in self.postorder() {
+            if direct.contains(&pid) {
+                visible.insert(pid);
+                continue;
+            }
+
+            let has_matching_descendant = self
+                .nodes
+                .get(&pid)
+                .map(|node| node.children.iter().any(|child| visible.contains(child)))
+                .unwrap_or(false);
+            if has_matching_descendant {
+                visible.insert(pid);
+            }
+        }
+
+        FilterMatchSet { visible, direct }
     }
 
     fn break_cycles(ordered_pids: &[i32], parents: &mut HashMap<i32, Option<i32>>) {
@@ -704,5 +752,40 @@ mod tests {
         assert_eq!(tree.sorted_pids(&rows, SortBy::Own), vec![1, 2, 3]);
         assert_eq!(tree.sorted_pids(&rows, SortBy::Pid), vec![1, 2, 3]);
         assert_eq!(tree.sorted_pids(&rows, SortBy::Comm), vec![2, 3, 1]);
+    }
+
+    #[test]
+    fn filter_match_set_keeps_matching_leaf_ancestors() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(1, 0, "root", 1),
+            proc(2, 1, "middle", 1),
+            proc(3, 2, "TargetLeaf", 1),
+        ]));
+
+        let matches = tree.filter_match_set("target");
+        assert_eq!(matches.direct, HashSet::from([3]));
+        assert_eq!(matches.visible, HashSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn filter_match_set_returns_empty_when_nothing_matches() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(1, 0, "alpha", 1),
+            proc(2, 1, "beta", 1),
+        ]));
+        let matches = tree.filter_match_set("zzz");
+        assert!(matches.direct.is_empty());
+        assert!(matches.visible.is_empty());
+    }
+
+    #[test]
+    fn filter_match_set_with_empty_filter_returns_all_rows() {
+        let tree = ProcTree::build(&snapshot(vec![
+            proc(10, 0, "one", 1),
+            proc(11, 10, "two", 1),
+            proc(12, 11, "three", 1),
+        ]));
+        let matches = tree.filter_match_set("");
+        assert_eq!(matches.visible, HashSet::from([10, 11, 12]));
     }
 }

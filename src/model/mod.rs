@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use crate::collect::MemSet;
 
-pub use tree::{AggMode, AggregateRow, ProcTree, SortBy, VisibleRow};
+pub use tree::{AggMode, AggregateRow, FilterMatchSet, ProcTree, SortBy, VisibleRow};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MemKind {

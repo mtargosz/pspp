@@ -9,6 +9,7 @@ use ratatui::Frame;
 use crate::query::format_size;
 use crate::ui::app::{App, AppMode, DisplayRow};
 use crate::ui::graph;
+use crate::ui::help;
 
 const MEM_BOX_HEIGHT: u16 = 6;
 const MEM_BOX_MIN_INNER_HEIGHT: u16 = 12;
@@ -63,40 +64,50 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
         .iter()
         .fold(0_u64, |sum, row| sum.saturating_add(row.own));
     let total_pct = percentage(total_used, app.snapshot.total_mem);
-    let status = Line::from(vec![
-        Span::styled(
-            format!("{} procs  ", app.snapshot.procs.len()),
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled("mem ", fg(theme.inactive_fg)),
-        Span::styled(
-            app.mem_kind.label().to_ascii_uppercase(),
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled(
-            format!("  agg {}", agg_mode_label(app.agg_mode)),
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled(
-            format!(
-                "  sort {}{}",
-                sort_label(app.sort_by),
-                sort_dir_label(app.sort_desc)
+    let status = Line::from(
+        vec![
+            Span::styled(
+                format!("{} procs  ", app.snapshot.procs.len()),
+                Style::default().fg(theme.color(theme.main_fg)),
             ),
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled(
-            format!("  update {}ms", app.update_ms),
-            Style::default().fg(theme.color(theme.main_fg)),
-        ),
-        Span::styled(
-            format!(
-                "  total {}",
-                format_size(app.snapshot.total_mem, app.base10)
+            Span::styled("mem ", fg(theme.inactive_fg)),
+            Span::styled(
+                app.mem_kind.label().to_ascii_uppercase(),
+                Style::default().fg(theme.color(theme.main_fg)),
             ),
-            Style::default().fg(theme.usage_color(total_pct)),
-        ),
-    ]);
+            Span::styled(
+                format!("  agg {}", agg_mode_label(app.agg_mode)),
+                Style::default().fg(theme.color(theme.main_fg)),
+            ),
+            Span::styled(
+                format!(
+                    "  sort {}{}",
+                    sort_label(app.sort_by),
+                    sort_dir_label(app.sort_desc)
+                ),
+                Style::default().fg(theme.color(theme.main_fg)),
+            ),
+            Span::styled(
+                format!("  update {}ms", app.update_ms),
+                Style::default().fg(theme.color(theme.main_fg)),
+            ),
+            Span::styled(
+                format!(
+                    "  total {}",
+                    format_size(app.snapshot.total_mem, app.base10)
+                ),
+                Style::default().fg(theme.usage_color(total_pct)),
+            ),
+        ]
+        .into_iter()
+        .chain(app.filter_indicator().into_iter().map(|text| {
+            Span::styled(
+                format!("  {text}"),
+                Style::default().fg(theme.color(theme.hi_fg)),
+            )
+        }))
+        .collect::<Vec<_>>(),
+    );
     frame.render_widget(Paragraph::new(status), status_area);
 
     if body_area.width == 0 {
@@ -141,7 +152,7 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
 
 fn draw_overlay(frame: &mut Frame<'_>, app: &mut App) {
     match app.mode {
-        AppMode::Normal => app.clear_menu_hit_test(),
+        AppMode::Normal | AppMode::FilterInput => app.clear_menu_hit_test(),
         AppMode::Menu => render_menu_overlay(frame, app),
         AppMode::Options => {
             app.clear_menu_hit_test();
@@ -333,7 +344,6 @@ fn render_row_cells(
         .fg(theme.color(theme.selected_fg))
         .bg(theme.color(theme.selected_bg));
 
-    let comm_text = format!("{}{}", row.tree_prefix, row.comm);
     let pid_text = row.pid.to_string();
     let own_text = with_approx_suffix(format_size(row.own, app.base10), row.own_approximate);
     let agg_text = with_approx_suffix(
@@ -348,14 +358,27 @@ fn render_row_cells(
     let meter_pct = percentage(row.aggregated, max_visible_agg);
 
     let default_style = Style::default().fg(theme.color(theme.main_fg));
+    let (prefix_style, comm_style) = if selected {
+        (selected_style, selected_style)
+    } else if app.is_direct_filter_match(row.pid) {
+        (
+            Style::default().fg(theme.color(theme.main_fg)),
+            Style::default().fg(theme.color(theme.hi_fg)),
+        )
+    } else if app.is_context_filter_match(row.pid) {
+        (
+            Style::default().fg(theme.color(theme.inactive_fg)),
+            Style::default().fg(theme.color(theme.inactive_fg)),
+        )
+    } else {
+        (default_style, default_style)
+    };
     frame.render_widget(
-        Paragraph::new(comm_text)
-            .style(if selected {
-                selected_style
-            } else {
-                default_style
-            })
-            .alignment(Alignment::Left),
+        Paragraph::new(Line::from(vec![
+            Span::styled(row.tree_prefix.clone(), prefix_style),
+            Span::styled(row.comm.clone(), comm_style),
+        ]))
+        .alignment(Alignment::Left),
         columns[0],
     );
     frame.render_widget(
@@ -459,6 +482,10 @@ fn render_hint(frame: &mut Frame<'_>, hint_area: Rect, app: &App) {
         ),
         Span::styled(
             "  e agg  m mem  s sort  S/r rev",
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
+        Span::styled(
+            "  f// filter",
             Style::default().fg(theme.color(theme.main_fg)),
         ),
         Span::styled(
@@ -622,11 +649,13 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
 
 fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App) {
     let area = frame.area();
-    let width = area.width.saturating_sub(6).clamp(28, 52);
-    let height = area.height.saturating_sub(6).clamp(6, 10);
+    let max_width = area.width.saturating_sub(2).max(24);
+    let max_height = area.height.saturating_sub(2).max(8);
+    let width = area.width.saturating_sub(6).clamp(24, max_width);
+    let height = area.height.saturating_sub(4).clamp(8, max_height);
     let overlay = centered_rect(area, width, height);
 
-    let theme = &app.theme;
+    let theme = app.theme.clone();
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.color(theme.div_line)))
@@ -637,18 +666,23 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App) {
     let inner = block.inner(overlay);
     frame.render_widget(block, overlay);
 
-    let text = Paragraph::new(vec![
-        Line::from(Span::styled(
-            "Help — milestone 11",
-            Style::default().fg(theme.color(theme.main_fg)),
-        )),
-        Line::from(Span::styled(
-            "Press Esc or q to go back",
-            Style::default().fg(theme.color(theme.inactive_fg)),
-        )),
-    ])
-    .alignment(Alignment::Center);
-    frame.render_widget(text, inner);
+    if inner.width == 0 || inner.height == 0 {
+        app.set_help_scroll_metrics(0, 1);
+        return;
+    }
+
+    let sections = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
+    let body = sections[0];
+    let footer = sections[1];
+    let lines = help::build_help_lines(&theme, usize::from(body.width));
+    app.set_help_scroll_metrics(lines.len(), usize::from(body.height));
+
+    let scroll = u16::try_from(app.help_scroll()).unwrap_or(u16::MAX);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), body);
+
+    let footer_text = Paragraph::new("↑/↓ j/k PgUp/PgDn scroll  Esc/q back")
+        .style(Style::default().fg(theme.color(theme.inactive_fg)));
+    frame.render_widget(footer_text, footer);
 }
 
 fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {

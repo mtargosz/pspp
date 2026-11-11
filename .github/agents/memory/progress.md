@@ -15,7 +15,7 @@
 - [x] 8. tree-table-ui — expand/collapse, kb+mouse nav, gradient meters, aggregation toggle
 - [x] 9. graphs — braille history graph + meter bars (block/tty fallbacks)
 - [x] 10. menus — Esc overlay, Options (General-style), config persistence
-- [ ] 11. help — plain-English memory explanations, filter (f, /)
+- [x] 11. help — plain-English memory explanations, filter (f, /)
 - [ ] 12. testing-pass — tester agent full pass
 - [ ] 13. review-pass — reviewer agent full pass
 - [ ] 14. docs — README, --help, man page
@@ -144,3 +144,20 @@
   - Added tests:
     - `config.rs`: save/load roundtrip, missing-file defaults, garbage-file fallback.
     - `ui/app.rs`: option-cycle helper behavior (index/sort/mem-kind/graph-symbol).
+
+### 2026-11-11 — coder
+- Completed milestone 11 help + process filter:
+  - Replaced help placeholder with a scrollable help overlay (`↑/↓/j/k/PgUp/PgDn`, `Esc/q`) and
+    moved all help text content to `src/ui/help.rs` as static strings rendered into styled lines.
+  - Added required help sections: grouped key bindings, mouse actions, memory-type explanations
+    (rss/vsz/footprint/pss/uss/swap), and a rollup-vs-flat summary.
+  - Implemented filter input mode (`f` or `/`) with status prompt `filter: <input>█`,
+    commit/clear behavior (`Enter`, `Esc`, `Backspace`, `c`), and active-filter status indicator.
+  - Added model-level pure matching logic `ProcTree::filter_match_set` (case-insensitive comm
+    substring; include matching nodes and ancestors of matching descendants), plus row highlighting
+    (direct matches hi_fg, context ancestors inactive_fg).
+  - Added focused tests:
+    - `model/tree.rs`: filter match-set behavior (ancestor retention, empty matches, cleared filter).
+    - `ui/help.rs`: memory-help coverage for every `MemKind` and help scroll clamp helper.
+  - Validation: `cargo build`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt`,
+    `cargo test` all green.

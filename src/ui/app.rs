@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use crate::collect::{self, Snapshot};
 use crate::model::{AggMode, AggregateRow, MemKind, ProcTree, SortBy, VisibleRow};
 use crate::ui::graph::{GraphSymbols, History};
+use crate::ui::help;
 use crate::ui::theme::Theme;
 
 pub const DEFAULT_UPDATE_MS: u64 = 2_000;
@@ -53,6 +54,7 @@ pub fn cycle_index(current: usize, len: usize, delta: isize) -> usize {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AppMode {
     Normal,
+    FilterInput,
     Menu,
     Options,
     Help,
@@ -249,6 +251,15 @@ pub struct App {
 
     option_selected: usize,
     update_ms_editor: Option<String>,
+
+    help_scroll: usize,
+    help_content_lines: usize,
+    help_viewport_lines: usize,
+
+    filter_input: String,
+    filter_committed: String,
+    filter_visible: HashSet<i32>,
+    filter_direct: HashSet<i32>,
 }
 
 impl App {
@@ -302,6 +313,13 @@ impl App {
             menu_button_rects: [None, None, None],
             option_selected: 0,
             update_ms_editor: None,
+            help_scroll: 0,
+            help_content_lines: 0,
+            help_viewport_lines: 1,
+            filter_input: String::new(),
+            filter_committed: String::new(),
+            filter_visible: HashSet::new(),
+            filter_direct: HashSet::new(),
         };
         app.record_mem_sample();
         app.rebuild_rows();
@@ -364,6 +382,45 @@ impl App {
 
     pub fn selected_option_description(&self) -> &'static str {
         self.selected_option_key().description()
+    }
+
+    pub fn help_scroll(&self) -> usize {
+        self.help_scroll
+    }
+
+    pub fn set_help_scroll_metrics(&mut self, content_lines: usize, viewport_lines: usize) {
+        self.help_content_lines = content_lines;
+        self.help_viewport_lines = viewport_lines.max(1);
+        self.help_scroll = help::clamp_scroll_offset(
+            self.help_scroll,
+            self.help_content_lines,
+            self.help_viewport_lines,
+        );
+    }
+
+    pub fn is_filter_active(&self) -> bool {
+        !self.filter_committed.is_empty()
+    }
+
+    pub fn filter_indicator(&self) -> Option<String> {
+        if self.mode == AppMode::FilterInput {
+            return Some(format!("filter: {}█", self.filter_input));
+        }
+        if self.filter_committed.is_empty() {
+            None
+        } else {
+            Some(format!("filter: {}", self.filter_committed))
+        }
+    }
+
+    pub fn is_direct_filter_match(&self, pid: i32) -> bool {
+        self.is_filter_active() && self.filter_direct.contains(&pid)
+    }
+
+    pub fn is_context_filter_match(&self, pid: i32) -> bool {
+        self.is_filter_active()
+            && !self.filter_direct.contains(&pid)
+            && self.filter_visible.contains(&pid)
     }
 
     pub fn option_value(&self, key: OptionKey) -> String {
@@ -434,6 +491,7 @@ impl App {
 
         match self.mode {
             AppMode::Normal => self.on_key_normal(key_event),
+            AppMode::FilterInput => self.on_key_filter_input(key_event),
             AppMode::Menu => self.on_key_menu(key_event),
             AppMode::Options => self.on_key_options(key_event),
             AppMode::Help => self.on_key_help(key_event),
@@ -452,6 +510,7 @@ impl App {
                 }
                 _ => {}
             },
+            AppMode::FilterInput => {}
             AppMode::Menu => {
                 if matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Left)) {
                     self.handle_menu_click(mouse_event.column, mouse_event.row);
@@ -515,6 +574,12 @@ impl App {
     fn on_key_normal(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => self.open_menu(),
+            KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('/') => {
+                self.enter_filter_input();
+            }
+            KeyCode::Char('c') | KeyCode::Char('C') if self.is_filter_active() => {
+                self.clear_filter();
+            }
             KeyCode::Char(ch) if is_quit_key(ch, key_event.modifiers) => {
                 self.should_quit = true;
             }
@@ -531,6 +596,29 @@ impl App {
             KeyCode::Char('m') | KeyCode::Char('M') => self.cycle_mem_kind(1),
             KeyCode::Char('s') => self.cycle_sort_key(1),
             KeyCode::Char('S') | KeyCode::Char('r') | KeyCode::Char('R') => self.reverse_sort(),
+            _ => {}
+        }
+    }
+
+    fn on_key_filter_input(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Esc => {
+                self.clear_filter();
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Enter => {
+                self.commit_filter_input();
+                self.mode = AppMode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.filter_input.pop();
+            }
+            KeyCode::Char(ch)
+                if !key_event.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key_event.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.filter_input.push(ch);
+            }
             _ => {}
         }
     }
@@ -593,6 +681,10 @@ impl App {
 
     fn on_key_help(&mut self, key_event: KeyEvent) {
         match key_event.code {
+            KeyCode::Up | KeyCode::Char('k') => self.move_help_scroll_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_help_scroll_by(1),
+            KeyCode::PageUp => self.move_help_scroll_by(-(self.help_page_step() as isize)),
+            KeyCode::PageDown => self.move_help_scroll_by(self.help_page_step() as isize),
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.mode = AppMode::Menu,
             _ => {}
         }
@@ -620,6 +712,7 @@ impl App {
             MenuButton::Help => {
                 self.mode = AppMode::Help;
                 self.update_ms_editor = None;
+                self.help_scroll = 0;
             }
             MenuButton::Quit => self.should_quit = true,
         }
@@ -690,16 +783,44 @@ impl App {
         self.viewport_height.saturating_sub(1).max(1)
     }
 
+    fn help_page_step(&self) -> usize {
+        self.help_viewport_lines.saturating_sub(1).max(1)
+    }
+
     fn rebuild_rows(&mut self) {
         let aggregates = self.tree.aggregate(self.mem_kind, self.agg_mode);
-        let visible = self.tree.flatten_visible_sorted(
-            &self.expanded,
-            &aggregates,
-            self.sort_by,
-            self.sort_desc,
-        );
-
-        self.rows = build_display_rows(&self.tree, &aggregates, &visible, &self.expanded);
+        if self.filter_committed.is_empty() {
+            self.filter_visible.clear();
+            self.filter_direct.clear();
+            let visible = self.tree.flatten_visible_sorted(
+                &self.expanded,
+                &aggregates,
+                self.sort_by,
+                self.sort_desc,
+            );
+            self.rows = build_display_rows(&self.tree, &aggregates, &visible, &self.expanded);
+        } else {
+            let match_set = self.tree.filter_match_set(&self.filter_committed);
+            self.filter_visible = match_set.visible.clone();
+            self.filter_direct = match_set.direct;
+            let expanded_all: HashSet<i32> = self
+                .snapshot
+                .procs
+                .iter()
+                .map(|proc_rec| proc_rec.pid)
+                .collect();
+            let visible_all = self.tree.flatten_visible_sorted(
+                &expanded_all,
+                &aggregates,
+                self.sort_by,
+                self.sort_desc,
+            );
+            let visible: Vec<VisibleRow> = visible_all
+                .into_iter()
+                .filter(|row| self.filter_visible.contains(&row.pid))
+                .collect();
+            self.rows = build_display_rows(&self.tree, &aggregates, &visible, &expanded_all);
+        }
         self.cursor = relocate_cursor_to_selected(self.selected_pid, &self.rows, self.cursor);
         self.apply_cursor_scroll_clamp();
         self.selected_pid = self.rows.get(self.cursor).map(|row| row.pid);
@@ -898,6 +1019,32 @@ impl App {
         };
 
         range.contains(&column)
+    }
+
+    fn enter_filter_input(&mut self) {
+        self.filter_input = self.filter_committed.clone();
+        self.mode = AppMode::FilterInput;
+    }
+
+    fn commit_filter_input(&mut self) {
+        self.filter_committed = self.filter_input.clone();
+        self.rebuild_rows();
+    }
+
+    fn clear_filter(&mut self) {
+        self.filter_input.clear();
+        self.filter_committed.clear();
+        self.rebuild_rows();
+    }
+
+    fn move_help_scroll_by(&mut self, delta: isize) {
+        let next = if delta >= 0 {
+            self.help_scroll.saturating_add(delta as usize)
+        } else {
+            self.help_scroll.saturating_sub(delta.unsigned_abs())
+        };
+        self.help_scroll =
+            help::clamp_scroll_offset(next, self.help_content_lines, self.help_viewport_lines);
     }
 }
 

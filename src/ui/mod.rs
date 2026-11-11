@@ -1,6 +1,7 @@
 pub mod app;
 pub mod draw;
 pub mod graph;
+pub mod help;
 pub mod theme;
 
 use std::error::Error;

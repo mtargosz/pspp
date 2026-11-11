@@ -30,12 +30,15 @@ src/
                        panic hook restoration, crossterm event loop + tick scheduling; returns
                        final `UiSettings` so main can persist them
     app.rs           — `App` state: snapshot/tree, agg mode, mem kind, update timing, base10,
-                       save_on_exit, graph symbol selection, app modes (Normal/Menu/Options/Help),
-                       tree expand/collapse state, sorting, selection+scroll, key/mouse handlers,
+                       save_on_exit, graph symbol selection, app modes
+                       (Normal/FilterInput/Menu/Options/Help), tree expand/collapse state,
+                       sorting + process filter state, selection+scroll, key/mouse handlers,
                        periodic refresh on ticks, row hit-test + menu hit-test caches
     draw.rs          — rounded-border frame, interactive process tree table, status+hint bars,
                        gradient-colored memory columns, btop-style meters and tree glyphs,
-                       Esc menu overlay, options editor overlay, help placeholder overlay
+                       Esc menu overlay, options editor overlay, scrollable help overlay
+    help.rs          — static help content (key tables, mouse actions, memory explanations),
+                       wrapped/styled line builder, help scroll clamp helper
     theme.rs         — named theme colors + 101-step gradients, 256-color fallback
     graph.rs         — `History` ring buffer, braille/block/tty graph rendering, ■ meter spans
   config.rs          — config load/save (`$PSPP_CONFIG_DIR/pspp.conf` override else
@@ -145,9 +148,31 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - `update_ms`: Enter-to-edit digit buffer (`Enter` commit, `Esc` cancel), or `←/→` ±100.
   - Other rows: `←/→` cycles/toggles; effects apply live to app rendering/sorting/refresh behavior.
   - Bottom line shows per-option description text.
-- Help overlay is a milestone-10 placeholder box (`Help — milestone 11`).
 - Config schema (`serde` + TOML):
   - `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`, `save_on_exit`,
     `sort_key`, `sort_reverse`.
   - `load()` is tolerant: missing file => defaults; unknown keys ignored; invalid values fallback.
   - `save()` creates parent dir and writes TOML with a header comment.
+
+## Help + filter (milestone 11)
+
+- App mode enum now includes `FilterInput` (`AppMode::{Normal, FilterInput, Menu, Options, Help}`).
+- Help overlay:
+  - centered rounded box titled `" help "` with scrollable content
+  - scroll keys: `↑/↓/j/k/PgUp/PgDn`; close: `Esc`/`q`
+  - sections rendered from `ui/help.rs` as styled `Line`s:
+    - key bindings grouped by navigation/tree/display/menu
+    - mouse actions
+    - memory types explained (`rss`, `vsz`, `footprint`, `pss`, `uss`, `swap`) with platform
+      availability and approximate (`~`) notes
+    - rollup vs flat aggregation summary
+- Filter behavior:
+  - `f` or `/` enters input mode with status prompt `filter: <input>█`
+  - input accepts printable characters (including spaces), `Backspace`, `Enter`, `Esc`
+  - `Enter` commits; `Esc` clears + exits; active filters show `filter: ...`; `c` clears
+  - matching is case-insensitive substring on `comm`
+  - retained rows are matching nodes plus ancestors of matching descendants (context preserved)
+  - matching `comm` is highlighted (`hi_fg`); non-matching ancestors are dimmed (`inactive_fg`)
+- Pure match-set logic:
+  - `ProcTree::filter_match_set(&str) -> FilterMatchSet { visible, direct }` in `model/tree.rs`
+  - unit tests cover: leaf match keeps ancestors, no matches => empty, empty filter => full set
