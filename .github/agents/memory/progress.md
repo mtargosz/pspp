@@ -9,7 +9,7 @@
 - [x] 2b. memory-store — this directory, seeded
 - [x] 3. collector — cross-platform snapshot (RSS/VSZ; macOS footprint; Linux PSS/USS/swap)
 - [x] 4. tree-model — forest, rollup + flat aggregation, sorting, unit tests
-- [ ] 5. query-mode — pspp <query> stdout mode (filters, --json)
+- [x] 5. query-mode — pspp <query> stdout mode (filters, --json)
 - [ ] 6. tui-skeleton — ratatui shell: alt screen, mouse, tick loop, resize, quit
 - [ ] 7. theme-gradients — theme struct, 101-step gradients, 256-color fallback
 - [ ] 8. tree-table-ui — expand/collapse, kb+mouse nav, gradient meters, aggregation toggle
@@ -53,3 +53,16 @@
 - Added focused unit tests for deep-chain rollup/flat behavior, wide/orphan/self/cycle handling,
   saturating addition, missing-value approximation, flattening collapse/expand behavior, and sorting.
 - Kept `main.rs` as a compiling smoke stub, now printing top rollup RSS parents.
+
+### 2026-11-11 — coder
+- Completed milestone 5 query-mode + real CLI entry:
+  - Replaced `main.rs` stub with derive-`clap` CLI and mode switch:
+    - query mode when query args are present or stdout is non-tty
+    - tty + no query args currently prints `TUI not yet implemented` (placeholder for milestone 6)
+  - Added `src/query/mod.rs` pure logic:
+    - `QueryOpts`, filtering (`PATTERN`, `--pid` subtree), aggregation mode (`rollup|flat`),
+      sorting (`agg|own|pid|comm`), `--min`, `--top`, plain table renderer, and JSON renderer
+    - size parse/format utilities (`512K`, `1.5G`, binary vs decimal units) with unit tests
+  - Added integration tests `tests/query_cli.rs` that execute the real binary for JSON validity,
+    top-row limiting, no-match stderr behavior, and invalid `--mem` diagnostics.
+  - Updated architecture memory docs with final milestone 5 CLI/query API details.

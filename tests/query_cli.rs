@@ -1,0 +1,91 @@
+use std::process::Command;
+
+use serde_json::Value;
+
+fn run(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_pspp"))
+        .args(args)
+        .output()
+        .expect("pspp binary should run")
+}
+
+fn count_data_rows(stdout: &str) -> usize {
+    stdout
+        .lines()
+        .filter(|line| {
+            line.chars()
+                .find(|ch| !ch.is_whitespace())
+                .is_some_and(|ch| ch.is_ascii_digit())
+        })
+        .count()
+}
+
+#[test]
+fn query_json_output_is_parseable_and_non_empty() {
+    let output = run(&["--json", "--top", "8"]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parsed: Value =
+        serde_json::from_slice(&output.stdout).expect("json output should be valid json");
+    let rows = parsed["rows"]
+        .as_array()
+        .expect("json output should contain rows array");
+    let total = parsed["total"]
+        .as_u64()
+        .expect("json output should contain total number");
+
+    assert!(!rows.is_empty(), "rows should not be empty");
+    assert!(total > 0, "total should be positive");
+}
+
+#[test]
+fn top_limits_plain_rows() {
+    let output = run(&["--mem", "vsz", "--top", "3"]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let data_rows = count_data_rows(&stdout);
+    assert!(
+        data_rows <= 3,
+        "expected at most 3 data rows, got {data_rows}\n{stdout}"
+    );
+}
+
+#[test]
+fn high_min_reports_no_matches() {
+    let output = run(&["--min", "100T"]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.to_ascii_lowercase().contains("no matches"),
+        "expected no matches message in stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn invalid_mem_lists_available_kinds() {
+    let output = run(&["--mem", "not-a-kind"]);
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit code for invalid --mem"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("available kinds"),
+        "expected helpful mem error with available kinds, got: {stderr}"
+    );
+}

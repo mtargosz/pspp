@@ -4,7 +4,10 @@
 
 ```
 src/
-  main.rs            — clap CLI entry: interactive TUI (default) vs non-interactive query mode
+  main.rs            — clap CLI entry:
+                       - if query args present OR stdout is non-tty: run query mode
+                       - else (tty + no query args): print "TUI not yet implemented" (milestone 6)
+                       Query flags: [PATTERN], --pid, --mem, --agg, --min, --sort, --top, --json, --base10
   collect/
     mod.rs           — Snapshot API: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>
                        MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
@@ -17,8 +20,9 @@ src/
                        iterative rollup/flat aggregation, deterministic child ordering, visible flattening,
                        stable sorting helpers
   query/
-    mod.rs           — non-interactive mode: name/pid filter, --mem type, --min threshold,
-                       plain-table and --json output
+    mod.rs           — pure query logic (`QueryOpts`, `run_query`, size parse/format):
+                       name/pid filtering, rollup|flat aggregation, threshold/sort/top,
+                       plain aligned table + JSON output wrapper { rows, total }
   ui/
     app.rs           — event loop (crossterm events + tick), AppState, update_ms, mode toggles
     theme.rs         — named theme colors + 101-step gradients, 256-color fallback
@@ -59,3 +63,15 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - `ProcTree::sorted_pids(..., SortBy::{Aggregated, Own, Pid, Comm}) -> Vec<i32>` (stable)
 - `ProcTree::flatten_visible(&HashSet<i32>) -> Vec<VisibleRow>`
   - depth-first visible rows: `{ pid, depth, has_children, is_last_child }`; synthetic root not emitted
+
+## Query-mode API (milestone 5)
+
+- `query::QueryOpts`
+  - `pattern` (case-insensitive substring on `comm`; `!` regex mode intentionally unsupported for now)
+  - `pid` subtree filter
+  - `mem_kind`, `agg_mode`, `min_bytes`, `sort_by`, `top`, `json`, `base10`
+- `query::run_query(&Snapshot, &QueryOpts) -> String`
+  - plain table columns: `PID`, `PARENT`, `COMM`, `OWN`, `<MEM> Σ`, `CHILDREN` + final `TOTAL`
+  - JSON object: `{ rows: [{ pid, ppid, comm, own, agg, children, descendants, approximate }], total }`
+- `query::{parse_size, format_size}`
+  - parse `512K`, `100M`, `1.5G`, bytes; format binary (`KiB`) or decimal (`KB`) units
