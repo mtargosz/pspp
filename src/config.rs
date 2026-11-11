@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::model::{AggMode, MemKind, SortBy};
+
 pub const CONFIG_FILE_NAME: &str = "pspp.conf";
 pub const MIN_UPDATE_MS: u64 = 100;
 pub const MAX_UPDATE_MS: u64 = 86_400_000;
@@ -89,12 +91,12 @@ impl Config {
             config.update_ms = update_ms;
         }
         if let Some(mem_kind) = table.get("mem_kind").and_then(toml_string_lower) {
-            if is_valid_mem_kind(&mem_kind) {
+            if mem_kind.parse::<MemKind>().is_ok() {
                 config.mem_kind = mem_kind;
             }
         }
         if let Some(agg_mode) = table.get("agg_mode").and_then(toml_string_lower) {
-            if matches!(agg_mode.as_str(), "rollup" | "flat") {
+            if agg_mode.parse::<AggMode>().is_ok() {
                 config.agg_mode = agg_mode;
             }
         }
@@ -110,7 +112,7 @@ impl Config {
             config.save_on_exit = save_on_exit;
         }
         if let Some(sort_key) = table.get("sort_key").and_then(toml_string_lower) {
-            if matches!(sort_key.as_str(), "agg" | "own" | "pid" | "comm") {
+            if sort_key.parse::<SortBy>().is_ok() {
                 config.sort_key = sort_key;
             }
         }
@@ -201,10 +203,6 @@ fn toml_integer_to_u64(value: &toml::Value) -> Option<u64> {
 
 fn toml_string_lower(value: &toml::Value) -> Option<String> {
     Some(value.as_str()?.trim().to_ascii_lowercase())
-}
-
-fn is_valid_mem_kind(value: &str) -> bool {
-    matches!(value, "rss" | "vsz" | "footprint" | "pss" | "uss" | "swap")
 }
 
 #[cfg(test)]

@@ -17,18 +17,19 @@ src/
   collect/
     mod.rs           — Snapshot API: { procs: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>, total_mem, used_mem };
                        `take_snapshot(kind: MemKind)`
-    worker.rs        — `Collector`: worker thread + mpsc; `request(kind)` (one in flight), `try_take()`
                        MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
+    worker.rs        — `Collector`: worker thread + mpsc; `request(kind)` (one in flight), `try_take()`
     macos.rs         — pid/ppid/p_comm from sysctl(KERN_PROC_ALL) (unprivileged) + sysinfo name/RSS/VSZ +
                        proc_pid_rusage (ri_phys_footprint); graceful fallback
     linux.rs         — /proc/<pid>/stat (pid/ppid/rss/vsz) + cmdline argv[0] name + smaps_rollup
                        (pss/uss/swap, only when the requested kind needs it); /proc/meminfo used/total;
                        permission/malformed-input fallback to RSS/VSZ-only records
   model/
-    mod.rs           — MemKind enum + parsing/labels/platform availability; model exports
-    tree.rs          — pid→ppid forest (orphans/self-links/cycles → synthetic root children),
-                       iterative rollup/flat aggregation, deterministic child ordering, visible flattening,
-                       stable sorting helpers
+    mod.rs           — `MemKind` (as_str/Display/FromStr/ValueEnum, `available()` as a static slice,
+                       `from_config`); model exports
+    tree.rs          — `AggMode`/`SortBy` (as_str/Display/FromStr/ValueEnum/ALL); pid→ppid forest
+                       (orphans/self-links/cycles → synthetic root children), iterative rollup/flat
+                       aggregation, deterministic child ordering, visible flattening, sorted flattening
   query/
     mod.rs           — pure query logic (`QueryOpts`, `run_query`, size parse/format):
                        name/pid filtering, rollup|flat aggregation, threshold/sort/top,
@@ -37,20 +38,22 @@ src/
     mod.rs           — `run_tui`: terminal lifecycle guard (alt screen/raw/mouse/cursor),
                        panic hook restoration, crossterm event loop + tick scheduling; returns
                        final `UiSettings` so main can persist them
-    app.rs           — `App` state: snapshot/tree, agg mode, mem kind, update timing, base10,
+    app.rs           — `App` state: tree (owns the snapshot), collector, agg mode, mem kind, update timing, base10,
                        save_on_exit, graph symbol selection, app modes
                        (Normal/FilterInput/Menu/Options/Help), tree expand/collapse state,
                        sorting + process filter state, selection+scroll, key/mouse handlers,
                        periodic refresh on ticks, row hit-test + menu hit-test caches
-    draw.rs          — rounded-border frame, interactive process tree table, status+hint bars,
-                       gradient-colored memory columns, btop-style meters and tree glyphs,
-                       Esc menu overlay, options editor overlay, scrollable help overlay
-    help.rs          — static help content (key tables, mouse actions, memory explanations),
-                       wrapped/styled line builder, help scroll clamp helper
+    draw.rs          — rounded/square-border frame, interactive process tree table (COMM, PID sized from the
+                       largest pid, OWN, Σ, %, CHILDREN, meter 12..=30 cells scaling with width), status+hint
+                       bars, gradient-colored memory columns, btop-style meters and tree glyphs, Esc menu,
+                       scrolling options overlay, help overlay with scrollbar; `screens` TestBackend tests
+    help.rs          — static help content: `key_sections()` tables (also the source of the README/man
+                       key tables), memory explanations, wrapped/styled line builder, scroll clamp helper
     theme.rs         — named theme colors + 101-step gradients, 256-color fallback, `TruecolorMode`,
                        btop `.theme` parser (`ThemeSpec`, `parse_btop_theme`, `discover_themes`, `load_theme_spec`)
     clock.rs         — strftime top-border clock (`format_clock_at/now`, chrono, validated formats)
     graph.rs         — `History` ring buffer, braille/block/tty graph rendering, ■ meter spans
+  docsync.rs         — test-only: keeps generated README/man blocks in sync (`PSPP_UPDATE_DOCS=1` rewrites)
   config.rs          — config load/save (`$PSPP_CONFIG_DIR/pspp.conf` override else
                        `~/.config/pspp/pspp.conf`), tolerant TOML reader, save_on_exit persistence
 tests/
@@ -86,16 +89,17 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 
 - `enum MemKind { Rss, Vsz, Footprint, Pss, Uss, Swap }`
   - `get(&MemSet) -> Option<u64>`
-  - `available() -> Vec<MemKind>` (`footprint` only on macOS; `pss/uss/swap` only on Linux)
-  - `label() -> &'static str`
-  - `FromStr` for CLI values: `rss|vsz|footprint|pss|uss|swap`
+  - `available() -> &'static [MemKind]` (`footprint` only on macOS; `pss/uss/swap` only on Linux)
+  - `label() -> &'static str` (display: `RSS`, `Footprint`); `as_str()`/`Display` (config/CLI: lowercase)
+  - `FromStr` (case-insensitive), `ALL`, `from_config(&str)` (unknown/unavailable → Rss)
+  - `clap::ValueEnum` listing only `available()`, so clap errors show the platform's valid kinds
 - `ProcTree::build(Snapshot) -> ProcTree` (owns records; `procs()`, `proc()`, `proc_count()`, `max_pid()`,
   `total_mem()`, `used_mem()`)
   - forest from pid→ppid links; orphan/self-link/cycle-safe with synthetic root semantics
-- `enum AggMode { Rollup, Flat }`
+- `enum AggMode { Rollup, Flat }` and `enum SortBy { Aggregated("agg"), Own, Pid, Comm }`: each has
+  `as_str()`, `Display`, `FromStr`, `ALL`, `Default`, and derives `clap::ValueEnum` (`AggMode::toggled()`)
 - `ProcTree::{aggregate, rollup, flat}`
   - return per-pid `AggregateRow { own, own_approximate, aggregated, aggregated_approximate, child_count, descendant_count }`
-- `ProcTree::sorted_pids(..., SortBy::{Aggregated, Own, Pid, Comm}) -> Vec<i32>` (stable)
 - `ProcTree::flatten_visible(&HashSet<i32>) -> Vec<VisibleRow>`
   - depth-first visible rows: `{ pid, depth, has_children, is_last_child }`; synthetic root not emitted
 - `ProcTree::flatten_visible_sorted(&HashSet<i32>, &HashMap<i32, AggregateRow>, SortBy, descending)`

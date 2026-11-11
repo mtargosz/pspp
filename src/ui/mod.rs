@@ -23,10 +23,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-pub use app::{
-    parse_agg_mode_config, parse_mem_kind_config, parse_sort_config, sort_to_config,
-    GraphSymbolSetting, UiSettings,
-};
+pub use app::{GraphSymbolSetting, UiSettings};
 
 type PanicHook = dyn for<'a> Fn(&PanicHookInfo<'a>) + Send + Sync + 'static;
 

@@ -3,46 +3,11 @@
 
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
-use std::str::FromStr;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use pspp::model::{AggMode, MemKind, SortBy};
 use pspp::query::QueryOpts;
 use pspp::{collect, config, query, ui};
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum CliAgg {
-    Rollup,
-    Flat,
-}
-
-impl From<CliAgg> for AggMode {
-    fn from(value: CliAgg) -> Self {
-        match value {
-            CliAgg::Rollup => AggMode::Rollup,
-            CliAgg::Flat => AggMode::Flat,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum CliSort {
-    Agg,
-    Own,
-    Pid,
-    Comm,
-}
-
-impl From<CliSort> for SortBy {
-    fn from(value: CliSort) -> Self {
-        match value {
-            CliSort::Agg => SortBy::Aggregated,
-            CliSort::Own => SortBy::Own,
-            CliSort::Pid => SortBy::Pid,
-            CliSort::Comm => SortBy::Comm,
-        }
-    }
-}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -82,7 +47,7 @@ struct Cli {
     #[arg(
         long,
         value_name = "KIND",
-        value_parser = parse_mem_kind,
+        value_enum,
         help = "Memory metric: rss, vsz, footprint (macOS), pss/uss/swap (Linux)"
     )]
     mem: Option<MemKind>,
@@ -93,7 +58,7 @@ struct Cli {
         value_enum,
         help = "Aggregation mode: subtree rollup or direct-children flat sum"
     )]
-    agg: Option<CliAgg>,
+    agg: Option<AggMode>,
 
     #[arg(
         long,
@@ -109,7 +74,7 @@ struct Cli {
         value_enum,
         help = "Sort rows by aggregated sum, own memory, PID, or COMM"
     )]
-    sort: Option<CliSort>,
+    sort: Option<SortBy>,
 
     #[arg(
         long,
@@ -172,48 +137,14 @@ impl Cli {
             pattern: self.pattern.clone().or_else(|| self.filter.clone()),
             pid: self.pid,
             mem_kind: self.mem.unwrap_or(defaults.mem_kind),
-            agg_mode: self.agg.map(Into::into).unwrap_or(defaults.agg_mode),
+            agg_mode: self.agg.unwrap_or(defaults.agg_mode),
             min_bytes: self.min,
-            sort_by: self.sort.map(Into::into).unwrap_or(defaults.sort_by),
+            sort_by: self.sort.unwrap_or(defaults.sort_by),
             top: self.top,
             json: self.json,
             base10: self.base10,
         }
     }
-}
-
-fn parse_mem_kind(value: &str) -> Result<MemKind, String> {
-    let available = MemKind::available();
-    let kind = MemKind::from_str(value).map_err(|_| {
-        format!(
-            "unknown memory kind '{value}'; available kinds: {}",
-            format_available_mem_kinds(&available)
-        )
-    })?;
-
-    if available.contains(&kind) {
-        Ok(kind)
-    } else {
-        Err(format!(
-            "memory kind '{value}' is unavailable on this platform; available kinds: {}",
-            format_available_mem_kinds(&available)
-        ))
-    }
-}
-
-fn format_available_mem_kinds(kinds: &[MemKind]) -> String {
-    kinds
-        .iter()
-        .map(|kind| match kind {
-            MemKind::Rss => "rss",
-            MemKind::Vsz => "vsz",
-            MemKind::Footprint => "footprint",
-            MemKind::Pss => "pss",
-            MemKind::Uss => "uss",
-            MemKind::Swap => "swap",
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 fn write_stdout_line(text: &str) -> io::Result<()> {
@@ -250,18 +181,16 @@ fn cli_and_config_to_ui_settings(cli: &Cli, cfg: &config::Config) -> ui::UiSetti
         update_ms: cli.update_ms.unwrap_or(cfg.update_ms),
         mem_kind: cli
             .mem
-            .unwrap_or_else(|| ui::parse_mem_kind_config(&cfg.mem_kind)),
+            .unwrap_or_else(|| MemKind::from_config(&cfg.mem_kind)),
         agg_mode: cli
             .agg
-            .map(Into::into)
-            .unwrap_or_else(|| ui::parse_agg_mode_config(&cfg.agg_mode)),
+            .unwrap_or_else(|| cfg.agg_mode.parse().unwrap_or_default()),
         graph_symbol: ui::GraphSymbolSetting::from_config(&cfg.graph_symbol),
         base10: if cli.base10 { true } else { cfg.base10 },
         save_on_exit: cfg.save_on_exit,
         sort_by: cli
             .sort
-            .map(Into::into)
-            .unwrap_or_else(|| ui::parse_sort_config(&cfg.sort_key)),
+            .unwrap_or_else(|| cfg.sort_key.parse().unwrap_or_default()),
         sort_reverse: cfg.sort_reverse,
         color_theme: cfg.color_theme.clone(),
         theme_background: cfg.theme_background,
@@ -286,13 +215,10 @@ fn apply_changed_settings_to_config(
         cfg.update_ms = current.update_ms;
     }
     if current.mem_kind != initial.mem_kind {
-        cfg.mem_kind = mem_kind_to_config(current.mem_kind).to_owned();
+        cfg.mem_kind = current.mem_kind.to_string();
     }
     if current.agg_mode != initial.agg_mode {
-        cfg.agg_mode = match current.agg_mode {
-            AggMode::Rollup => "rollup".to_owned(),
-            AggMode::Flat => "flat".to_owned(),
-        };
+        cfg.agg_mode = current.agg_mode.to_string();
     }
     if current.graph_symbol != initial.graph_symbol {
         cfg.graph_symbol = current.graph_symbol.as_config().to_owned();
@@ -301,7 +227,7 @@ fn apply_changed_settings_to_config(
         cfg.base10 = current.base10;
     }
     if current.sort_by != initial.sort_by {
-        cfg.sort_key = ui::sort_to_config(current.sort_by).to_owned();
+        cfg.sort_key = current.sort_by.to_string();
     }
     if current.sort_reverse != initial.sort_reverse {
         cfg.sort_reverse = current.sort_reverse;
@@ -334,17 +260,6 @@ fn apply_changed_settings_to_config(
         cfg.force_tty = current.force_tty;
     }
     cfg.save_on_exit = current.save_on_exit;
-}
-
-fn mem_kind_to_config(mem_kind: MemKind) -> &'static str {
-    match mem_kind {
-        MemKind::Rss => "rss",
-        MemKind::Vsz => "vsz",
-        MemKind::Footprint => "footprint",
-        MemKind::Pss => "pss",
-        MemKind::Uss => "uss",
-        MemKind::Swap => "swap",
-    }
 }
 
 fn main() -> ExitCode {

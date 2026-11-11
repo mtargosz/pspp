@@ -1,6 +1,6 @@
 # pspp — Progress board (living document)
 
-## Project status: follow-up milestones M15–M23 in progress (see `pspp_review_prompt.md`)
+## Project status: COMPLETE (follow-up milestones M15–M23 from the 2026-11-11 review are done)
 
 ## Status key: [ ] pending · [~] in progress · [x] done · [!] blocked
 
@@ -29,7 +29,7 @@
 - [x] M20 feat(options): btop General parity and global keys
 - [x] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
 - [x] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
-- [ ] M23 refactor: single source of truth for enums; docs pass
+- [x] M23 refactor: single source of truth for enums; docs pass
 
 ## Log
 
@@ -329,6 +329,16 @@
 - `tests/fixtures/*.json` (6 scenarios) + `tests/model_tests.rs` (9 tests) via the new library crate.
 - Fixed while testing: dangling `├─` glyphs in filtered views (`relabel_last_children`).
 - `.github/workflows/ci.yml` added; `architecture.md` test layout corrected (it previously listed files that did not exist).
+
+### 2026-11-11 — M23 (refactor: single source of truth for enums; docs pass)
+- Enum consolidation (see decisions.md); `MemKind::available()` is a static slice; dead `sorted_pids`/`cmp_desc` removed.
+- Meter width scales with the terminal (12..=30); `Cargo.toml` gained `rust-version`, `repository`, `readme`,
+  `keywords`, `categories`.
+- Docs pass: README key tables + man-page KEY BINDINGS generated from `help::key_sections()`, README screen
+  capture generated from the renderer, all drift-checked by `cargo test --lib`; architecture.md module map and
+  public APIs refreshed.
+- Gates at the end of the series: build, test (unit + model + CLI), clippy `-D warnings`, fmt, doc, and
+  `cargo check --target x86_64-unknown-linux-gnu --all-targets` all clean.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.

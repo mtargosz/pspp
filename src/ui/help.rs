@@ -100,6 +100,17 @@ const MOUSE_ACTIONS: [(&str, &str); 8] = [
     ),
 ];
 
+/// Titled key/mouse tables, in display order. Shared by the Help overlay, README and man page.
+pub fn key_sections() -> [(&'static str, &'static [(&'static str, &'static str)]); 5] {
+    [
+        ("Navigation", &NAVIGATION_KEYS),
+        ("Tree", &TREE_KEYS),
+        ("Display & Filter", &DISPLAY_KEYS),
+        ("Menu / Overlays", &MENU_KEYS),
+        ("Mouse", &MOUSE_ACTIONS),
+    ]
+}
+
 pub fn memory_help_text(kind: MemKind) -> &'static str {
     match kind {
         MemKind::Rss => {
@@ -139,18 +150,15 @@ pub fn build_help_lines(theme: &Theme, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let key_width = width.saturating_div(3).clamp(14, 30);
 
+    let [navigation, tree, display, menu, mouse] = key_sections();
     push_section_header(&mut lines, theme, "key bindings");
-    push_subheader(&mut lines, theme, "navigation");
-    push_key_rows(&mut lines, theme, &NAVIGATION_KEYS, key_width, width);
-    push_subheader(&mut lines, theme, "tree");
-    push_key_rows(&mut lines, theme, &TREE_KEYS, key_width, width);
-    push_subheader(&mut lines, theme, "display");
-    push_key_rows(&mut lines, theme, &DISPLAY_KEYS, key_width, width);
-    push_subheader(&mut lines, theme, "menu / overlays");
-    push_key_rows(&mut lines, theme, &MENU_KEYS, key_width, width);
+    for (title, keys) in [navigation, tree, display, menu] {
+        push_subheader(&mut lines, theme, &title.to_lowercase());
+        push_key_rows(&mut lines, theme, keys, key_width, width);
+    }
 
     push_section_header(&mut lines, theme, "mouse actions");
-    push_key_rows(&mut lines, theme, &MOUSE_ACTIONS, key_width, width);
+    push_key_rows(&mut lines, theme, mouse.1, key_width, width);
 
     push_section_header(&mut lines, theme, "memory types explained");
     for kind in [
@@ -312,7 +320,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_scroll_offset, memory_help_text};
+    use super::{clamp_scroll_offset, key_sections, memory_help_text};
     use crate::model::MemKind;
 
     #[test]
@@ -336,5 +344,132 @@ mod tests {
         assert_eq!(clamp_scroll_offset(0, 30, 10), 0);
         assert_eq!(clamp_scroll_offset(100, 30, 10), 20);
         assert_eq!(clamp_scroll_offset(7, 30, 10), 7);
+    }
+
+    // ---- generated documentation blocks ------------------------------------------------
+
+    fn markdown_escape(text: &str) -> String {
+        text.replace('|', "\\|")
+    }
+
+    /// README key tables: one `####` heading and table per section (mouse gets its own `###`).
+    fn render_markdown_key_tables() -> String {
+        let mut out = String::new();
+        for (title, rows) in key_sections() {
+            if title == "Mouse" {
+                out.push_str("### Mouse Support\n\n| Mouse Action | Effect |\n|---|---|\n");
+            } else {
+                out.push_str(&format!("#### {title}\n\n| Key | Action |\n|---|---|\n"));
+            }
+            for (keys, action) in rows {
+                out.push_str(&format!(
+                    "| `{}` | {} |\n",
+                    markdown_escape(keys),
+                    markdown_escape(action)
+                ));
+            }
+            out.push('\n');
+        }
+        out.trim_end().to_owned()
+    }
+
+    fn roff_escape(text: &str) -> String {
+        let mut out = String::new();
+        for ch in text.chars() {
+            match ch {
+                '\\' => out.push_str("\\e"),
+                '-' => out.push_str("\\-"),
+                '\u{2191}' => out.push_str("Up"),
+                '\u{2193}' => out.push_str("Down"),
+                '\u{2190}' => out.push_str("Left"),
+                '\u{2192}' => out.push_str("Right"),
+                '\u{3a3}' => out.push_str("\\(*S"),
+                other => out.push(other),
+            }
+        }
+        // A leading `.` or `'` would be read as a roff request.
+        if out.starts_with(['.', '\'']) {
+            out.insert_str(0, "\\&");
+        }
+        out
+    }
+
+    /// Greedy word wrap so generated roff stays within man-page style limits.
+    fn wrap_words(text: &str, width: usize) -> Vec<String> {
+        let mut lines: Vec<String> = Vec::new();
+        for word in text.split_whitespace() {
+            match lines.last_mut() {
+                Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
+                    line.push(' ');
+                    line.push_str(word);
+                }
+                _ => lines.push(word.to_owned()),
+            }
+        }
+        lines
+    }
+
+    /// Man-page `.SS`/`.TP` entries for every table.
+    fn render_roff_key_bindings() -> String {
+        let mut out = String::new();
+        for (title, rows) in key_sections() {
+            let heading = match title {
+                "Mouse" => "Mouse Actions",
+                other => other,
+            };
+            out.push_str(&format!(".SS {}\n", roff_escape(heading)));
+            for (keys, action) in rows {
+                out.push_str(&format!(
+                    ".TP\n.B {}\n{}\n",
+                    roff_escape(keys),
+                    wrap_words(&roff_escape(action), 72).join("\n")
+                ));
+            }
+        }
+        out.trim_end().to_owned()
+    }
+
+    #[test]
+    fn readme_key_tables_match_the_help_tables() {
+        use crate::docsync::{markdown_markers, sync_block};
+        sync_block(
+            "README.md",
+            markdown_markers("key-tables"),
+            &render_markdown_key_tables(),
+        );
+    }
+
+    #[test]
+    fn man_page_key_bindings_match_the_help_tables() {
+        use crate::docsync::{roff_markers, sync_block};
+        sync_block(
+            "doc/pspp.1",
+            roff_markers("key-bindings"),
+            &render_roff_key_bindings(),
+        );
+    }
+
+    #[test]
+    fn generators_escape_markup() {
+        assert_eq!(markdown_escape("a|b"), "a\\|b");
+        assert_eq!(
+            roff_escape("Left/Right - \u{2191}/\u{2193} \u{3a3}"),
+            "Left/Right \\- Up/Down \\(*S"
+        );
+        assert_eq!(roff_escape(".hidden"), "\\&.hidden");
+        assert_eq!(roff_escape("a\\b"), "a\\eb");
+    }
+
+    #[test]
+    fn every_key_table_row_is_documented_text() {
+        for (title, rows) in key_sections() {
+            assert!(!rows.is_empty(), "{title}");
+            for (keys, action) in rows {
+                assert!(
+                    !keys.trim().is_empty() && !action.trim().is_empty(),
+                    "{title}"
+                );
+            }
+        }
     }
 }

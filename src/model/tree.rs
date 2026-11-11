@@ -1,22 +1,102 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::str::FromStr;
+
+use clap::ValueEnum;
 
 use crate::collect::{ProcRec, Snapshot};
 use crate::model::MemKind;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, ValueEnum)]
 pub enum AggMode {
+    /// Subtree sum: the process plus all of its descendants.
+    #[default]
     Rollup,
+    /// Direct-children sum only.
     Flat,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+impl AggMode {
+    pub const ALL: [AggMode; 2] = [AggMode::Rollup, AggMode::Flat];
+
+    /// Config/CLI spelling (lowercase).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AggMode::Rollup => "rollup",
+            AggMode::Flat => "flat",
+        }
+    }
+
+    pub fn toggled(self) -> AggMode {
+        match self {
+            AggMode::Rollup => AggMode::Flat,
+            AggMode::Flat => AggMode::Rollup,
+        }
+    }
+}
+
+impl fmt::Display for AggMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AggMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lowered = s.trim().to_ascii_lowercase();
+        AggMode::ALL
+            .into_iter()
+            .find(|mode| mode.as_str() == lowered)
+            .ok_or_else(|| format!("unknown aggregation mode: {s}"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, ValueEnum)]
 pub enum SortBy {
+    /// Aggregated (Σ) memory.
     #[default]
+    #[value(name = "agg")]
     Aggregated,
+    /// The process's own memory.
     Own,
     Pid,
     Comm,
+}
+
+impl SortBy {
+    /// Order used when cycling the sort key.
+    pub const ALL: [SortBy; 4] = [SortBy::Aggregated, SortBy::Own, SortBy::Pid, SortBy::Comm];
+
+    /// Config/CLI spelling (lowercase).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SortBy::Aggregated => "agg",
+            SortBy::Own => "own",
+            SortBy::Pid => "pid",
+            SortBy::Comm => "comm",
+        }
+    }
+}
+
+impl fmt::Display for SortBy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SortBy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let lowered = s.trim().to_ascii_lowercase();
+        SortBy::ALL
+            .into_iter()
+            .find(|sort| sort.as_str() == lowered)
+            .ok_or_else(|| format!("unknown sort key: {s}"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,33 +351,6 @@ impl ProcTree {
         }
 
         rows
-    }
-
-    pub fn sorted_pids(&self, rows: &HashMap<i32, AggregateRow>, sort_by: SortBy) -> Vec<i32> {
-        let mut pids = self.ordered_pids.clone();
-        match sort_by {
-            SortBy::Aggregated => {
-                pids.sort_by(|a, b| Self::cmp_desc(rows.get(a), rows.get(b), |row| row.aggregated))
-            }
-            SortBy::Own => {
-                pids.sort_by(|a, b| Self::cmp_desc(rows.get(a), rows.get(b), |row| row.own))
-            }
-            SortBy::Pid => pids.sort(),
-            SortBy::Comm => pids.sort_by(|a, b| {
-                let a_comm = self
-                    .nodes
-                    .get(a)
-                    .map(|node| node.rec.comm.as_str())
-                    .unwrap_or_default();
-                let b_comm = self
-                    .nodes
-                    .get(b)
-                    .map(|node| node.rec.comm.as_str())
-                    .unwrap_or_default();
-                a_comm.cmp(b_comm)
-            }),
-        }
-        pids
     }
 
     pub fn flatten_visible(&self, expanded: &HashSet<i32>) -> Vec<VisibleRow> {
@@ -556,16 +609,6 @@ impl ProcTree {
         }
     }
 
-    fn cmp_desc(
-        a: Option<&AggregateRow>,
-        b: Option<&AggregateRow>,
-        value: impl Fn(&AggregateRow) -> u64,
-    ) -> Ordering {
-        let a_val = a.map(&value).unwrap_or(0);
-        let b_val = b.map(value).unwrap_or(0);
-        b_val.cmp(&a_val)
-    }
-
     fn sorted_pid_list(
         &self,
         pids: &[i32],
@@ -789,18 +832,32 @@ mod tests {
     }
 
     #[test]
-    fn sorting_helpers_are_stable() {
-        let tree = ProcTree::build(snapshot(vec![
-            proc(1, 0, "z", 5),
-            proc(2, 0, "a", 5),
-            proc(3, 0, "b", 1),
-        ]));
-        let rows = tree.rollup(MemKind::Rss);
+    fn enum_string_forms_are_the_single_source_of_truth() {
+        use clap::ValueEnum;
+        for mode in AggMode::ALL {
+            assert_eq!(mode.to_string(), mode.as_str());
+            assert_eq!(mode.as_str().parse::<AggMode>(), Ok(mode));
+            assert_eq!("  FLAT ".parse::<AggMode>().ok(), Some(AggMode::Flat));
+            assert_eq!(
+                mode.to_possible_value().map(|v| v.get_name().to_owned()),
+                Some(mode.as_str().to_owned())
+            );
+        }
+        assert_eq!(AggMode::default(), AggMode::Rollup);
+        assert_eq!(AggMode::Rollup.toggled(), AggMode::Flat);
+        assert_eq!(AggMode::Flat.toggled(), AggMode::Rollup);
+        assert!("sideways".parse::<AggMode>().is_err());
 
-        assert_eq!(tree.sorted_pids(&rows, SortBy::Aggregated), vec![1, 2, 3]);
-        assert_eq!(tree.sorted_pids(&rows, SortBy::Own), vec![1, 2, 3]);
-        assert_eq!(tree.sorted_pids(&rows, SortBy::Pid), vec![1, 2, 3]);
-        assert_eq!(tree.sorted_pids(&rows, SortBy::Comm), vec![2, 3, 1]);
+        for sort in SortBy::ALL {
+            assert_eq!(sort.to_string(), sort.as_str());
+            assert_eq!(sort.as_str().parse::<SortBy>(), Ok(sort));
+            assert_eq!(
+                sort.to_possible_value().map(|v| v.get_name().to_owned()),
+                Some(sort.as_str().to_owned())
+            );
+        }
+        assert_eq!(SortBy::value_variants().len(), SortBy::ALL.len());
+        assert!("name".parse::<SortBy>().is_err());
     }
 
     #[test]

@@ -22,7 +22,6 @@ pub const MAX_UPDATE_MS: u64 = 86_400_000;
 
 const MOUSE_SCROLL_STEP: isize = 3;
 const DOUBLE_CLICK_MS: u64 = 350;
-const SORT_ORDER: [SortBy; 4] = [SortBy::Aggregated, SortBy::Own, SortBy::Pid, SortBy::Comm];
 const MENU_BUTTONS: [MenuButton; 3] = [MenuButton::Options, MenuButton::Help, MenuButton::Quit];
 const OPTION_KEYS: [OptionKey; 17] = [
     OptionKey::UpdateMs,
@@ -614,15 +613,12 @@ impl App {
                 }
                 self.update_ms.to_string()
             }
-            OptionKey::MemKind => self.mem_kind.label().to_ascii_lowercase(),
-            OptionKey::AggMode => match self.agg_mode {
-                AggMode::Rollup => "rollup".to_owned(),
-                AggMode::Flat => "flat".to_owned(),
-            },
+            OptionKey::MemKind => self.mem_kind.to_string(),
+            OptionKey::AggMode => self.agg_mode.to_string(),
             OptionKey::GraphSymbol => self.graph_symbol.label().to_owned(),
             OptionKey::Base10 => bool_label(self.base10).to_owned(),
             OptionKey::SaveOnExit => bool_label(self.save_on_exit).to_owned(),
-            OptionKey::SortKey => sort_to_config(self.sort_by).to_owned(),
+            OptionKey::SortKey => self.sort_by.to_string(),
             OptionKey::SortReverse => bool_label(self.sort_desc).to_owned(),
             OptionKey::ColorTheme => self.color_theme.clone(),
             OptionKey::ThemeBackground => bool_label(self.theme_background).to_owned(),
@@ -1334,20 +1330,12 @@ impl App {
     }
 
     fn toggle_agg_mode(&mut self) {
-        self.agg_mode = match self.agg_mode {
-            AggMode::Rollup => AggMode::Flat,
-            AggMode::Flat => AggMode::Rollup,
-        };
+        self.agg_mode = self.agg_mode.toggled();
         self.rebuild_rows();
     }
 
     fn cycle_mem_kind(&mut self, delta: isize) {
-        let available = MemKind::available();
-        if available.is_empty() {
-            return;
-        }
-
-        self.mem_kind = cycle_mem_kind_value(self.mem_kind, delta, &available);
+        self.mem_kind = cycle_mem_kind_value(self.mem_kind, delta, MemKind::available());
         // Platforms that read metric-specific data lazily need a fresh snapshot for the new kind.
         self.request_refresh();
         self.rebuild_rows();
@@ -1541,54 +1529,11 @@ pub fn cycle_mem_kind_value(current: MemKind, delta: isize, available: &[MemKind
 }
 
 pub fn cycle_sort_key_value(current: SortBy, delta: isize) -> SortBy {
-    let idx = SORT_ORDER
+    let idx = SortBy::ALL
         .iter()
         .position(|sort_by| *sort_by == current)
         .unwrap_or(0);
-    SORT_ORDER[cycle_index(idx, SORT_ORDER.len(), delta)]
-}
-
-pub fn parse_mem_kind_config(value: &str) -> MemKind {
-    let parsed = match value.trim().to_ascii_lowercase().as_str() {
-        "rss" => MemKind::Rss,
-        "vsz" => MemKind::Vsz,
-        "footprint" => MemKind::Footprint,
-        "pss" => MemKind::Pss,
-        "uss" => MemKind::Uss,
-        "swap" => MemKind::Swap,
-        _ => MemKind::Rss,
-    };
-
-    if MemKind::available().contains(&parsed) {
-        parsed
-    } else {
-        MemKind::Rss
-    }
-}
-
-pub fn parse_agg_mode_config(value: &str) -> AggMode {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "flat" => AggMode::Flat,
-        _ => AggMode::Rollup,
-    }
-}
-
-pub fn parse_sort_config(value: &str) -> SortBy {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "own" => SortBy::Own,
-        "pid" => SortBy::Pid,
-        "comm" => SortBy::Comm,
-        _ => SortBy::Aggregated,
-    }
-}
-
-pub fn sort_to_config(sort_by: SortBy) -> &'static str {
-    match sort_by {
-        SortBy::Aggregated => "agg",
-        SortBy::Own => "own",
-        SortBy::Pid => "pid",
-        SortBy::Comm => "comm",
-    }
+    SortBy::ALL[cycle_index(idx, SortBy::ALL.len(), delta)]
 }
 
 fn bool_label(value: bool) -> &'static str {

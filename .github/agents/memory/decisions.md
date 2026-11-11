@@ -151,3 +151,23 @@ Per-agent models set in profile frontmatter:
   macos-latest and ubuntu-latest with `RUSTFLAGS`/`RUSTDOCFLAGS=-D warnings`.
 - Screen tests assert meter fill by cell colour (filled vs `meter_bg`), because filled and empty cells are
   both `■`.
+
+## 2026-11-11 — M23
+
+- **One definition per enum**: `MemKind`, `AggMode`, `SortBy` own `as_str`/`Display`/`FromStr`/`ValueEnum`;
+  `CliAgg`, `CliSort`, `format_available_mem_kinds`, `mem_kind_to_config`, `ui::parse_*_config`,
+  `ui::sort_to_config` and the draw-side label helpers are gone. `MemKind`'s `ValueEnum` lists only
+  `available()`, so `--mem pss` on macOS is a clap usage error (exit 2) reading
+  `invalid value 'pss' … [possible values: rss, vsz, footprint]`. This replaces the earlier custom
+  "available kinds: …" message.
+- **`ProcTree::sorted_pids` removed** (case-sensitive Comm arm, test-only). `Snapshot::taken_at` was already
+  removed in M21 (decision: no "sample age" indicator).
+- **`MemKind::available()` returns `&'static [MemKind]`.**
+- **Meter column = `width / 6` clamped to 12..=30 cells**, shrunk (to 0 if needed) before COMM drops below
+  12 cells; extra width beyond the meter's cap goes to COMM.
+- **MSRV 1.88** (`rust-version`): the newest `rust_version` among locked dependencies (darling/instability,
+  pulled in by ratatui). Not CI-verified on an older toolchain; CI uses stable.
+- **Docs are generated where they derive from code**: README key tables, man-page KEY BINDINGS and the README
+  screen capture are produced from `help::key_sections()` and the TestBackend renderer; `cargo test --lib`
+  fails on drift and `PSPP_UPDATE_DOCS=1 cargo test --lib` rewrites them. The screenshot TODO became an
+  inline plain-text capture plus capture instructions (no binary image committed).

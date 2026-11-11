@@ -8,7 +8,7 @@ Standard tools like `ps` and `top` list processes flatly, making heavy multi-pro
 
 ## Install & Build
 
-Requires a recent stable Rust toolchain (`rustc` / `cargo`, Rust 2021 edition) on **macOS** or **Linux**.
+Requires Rust 1.88 or newer (`rustc` / `cargo`, 2021 edition) on **macOS** or **Linux**.
 
 ```sh
 cargo build --release
@@ -38,7 +38,38 @@ pspp -f chrome                  # pre-set the process filter (like btop -f)
 
 `--mem`, `--agg`, `--sort`, `--base10` and `--update-ms` apply to the TUI too, for that run only: CLI overrides are never written to `pspp.conf`. With `save_on_exit = true`, only settings you change inside the TUI are saved.
 
-<!-- TODO: add screenshot of pspp TUI (expandable process tree, braille memory graph, grass-green to bloody-red gradient meters, and Esc overlay menu) -->
+<!-- BEGIN GENERATED: screen -->
+A plain-text capture of the TUI, rendered by the test suite from a synthetic process tree (100×24; the green→red usage gradient and the selected-row highlight are colours and do not show up in text). `launchd` is the selected row.
+
+```text
+╭ pspp ────────────────────────────────────────────────────────────────────────────────────────────╮
+│7 procs  mem FOOTPRINT  agg rollup  sort agg↓  update 2000ms  used 2.0 GiB / 4.0 GiB              │
+│╭ mem ───────────────────────────────────────────────────────────────────────────────────────────╮│
+││                                                                                            ⢰⡇ ⣤││
+││                                                                                          ⡄⢠⣿⣷⡀⣿││
+││                                                                                          ⣇⣿⣿⣿⣧⣿││
+││used 2.0 GiB / 4.0 GiB ■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■ 50%  Σ FOOTPRINT 1.2 GiB││
+│╰────────────────────────────────────────────────────────────────────────────────────────────────╯│
+│COMM                                  PID        OWN FOOTPRINT Σ~      % CHILDREN METER           │
+│[-] launchd                             1  100.0 MiB     1.1 GiB~  28.1%        2 ■■■■■■■■■■■■■■■■│
+│├─ [-] shell                            2  200.0 MiB   550.0 MiB~  13.4%        2 ■■■■■■■■■■■■■■■■│
+││  ├─ [-] editor                        3  300.0 MiB   300.0 MiB~   7.3%        1 ■■■■■■■■■■■■■■■■│
+││  │  └─ plugin                         4       0 B~         0 B~   0.0%        0 ■■■■■■■■■■■■■■■■│
+││  └─ build                             5   50.0 MiB     50.0 MiB   1.2%        0 ■■■■■■■■■■■■■■■■│
+│└─ daemon                               6  500.0 MiB    500.0 MiB  12.2%        0 ■■■■■■■■■■■■■■■■│
+│stray                                   7   60.0 MiB     60.0 MiB   1.5%        0 ■■■■■■■■■■■■■■■■│
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│↑/↓ j/k PgUp/PgDn  ←/→  Space/Enter  e agg  m mem  s sort  S/r rev  f// filter  h/F1 help         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+To capture your own: run `pspp` in a terminal about 120 columns wide and use the terminal's screenshot tool (macOS: `Cmd-Shift-4`, then `Space` and click the window).
+<!-- END GENERATED: screen -->
 
 The TUI renders a rounded btop-style frame with:
 
@@ -51,17 +82,19 @@ The TUI renders a rounded btop-style frame with:
 
 Every operation is accessible from the keyboard (matching the in-app **Help** overlay via `Esc` → `Help`):
 
+<!-- BEGIN GENERATED: key-tables -->
 #### Navigation
 
 | Key | Action |
 |---|---|
-| `↑/↓, j/k` | Move selection one row (`j/k` need `vim_keys`). |
+| `↑/↓, j/k` | Move selection one row (j/k need vim_keys). |
 | `PgUp/PgDn` | Move by one page. |
-| `Home/End, g/G` | Jump to first/last row (`g/G` need `vim_keys`). |
-| `h`, `?`, `F1` | Open Help (`h` always opens Help, even with `vim_keys` off). |
-| `o`, `F2` | Open Options. |
-| `+` / `-` | Increase / decrease the refresh interval by 100 ms. |
-| `q/Q, Ctrl-C, Ctrl-Q` | Quit `pspp` (`Ctrl-C`/`Ctrl-Q` from any mode). |
+| `Home/End, g/G` | Jump to first/last row (g/G need vim_keys). |
+| `h, ?, F1` | Open Help (h always opens Help, even with vim_keys off). |
+| `o, F2` | Open Options. |
+| `+ / -` | Increase / decrease the refresh interval by 100 ms. |
+| `m vs btop` | m cycles the memory type here; btop uses m for its menu (pspp's menu is Esc). |
+| `q/Q, Ctrl-C, Ctrl-Q` | Quit pspp (Ctrl-C/Ctrl-Q from any mode). |
 | `f/F or /` | Start filter input. |
 | `c/C` | Clear the committed filter. |
 | `Esc` | Open main menu. |
@@ -70,49 +103,50 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 
 | Key | Action |
 |---|---|
-| `Space or Enter` | Toggle expand/collapse on selected node. |
+| `Space or Enter` | Toggle expand/collapse on selected node (also while filtering). |
 | `←` | Collapse selected node, or select parent. |
-| `→`, `l` | Expand selected node (`l` needs `vim_keys`). |
+| `→, l` | Expand selected node (l needs vim_keys). |
 
 #### Display & Filter
 
 | Key | Action |
 |---|---|
-| `e/E` | Toggle aggregation mode: `rollup`/`flat`. |
-| `m/M` | Cycle memory type. *(Deviation from btop, where `m` opens the menu; in `pspp` the menu is `Esc`.)* |
-| `s` | Cycle sort key (`agg` → `own` → `pid` → `comm`). |
+| `e/E` | Toggle aggregation mode: rollup/flat. |
+| `m/M` | Cycle memory type. |
+| `s` | Cycle sort key. |
 | `S or r/R` | Reverse sort direction. |
-| `Filter input` | Type any characters (including spaces); matches `COMM` case-insensitively and keeps matching ancestors dimmed for context. |
+| `Filter input` | Type any characters (including spaces). |
 | `Backspace` | Delete one character in filter input. |
 | `Enter` | Commit the filter and expand the ancestors of every match. |
-| `Esc` | Leave filter input and restore the previously committed filter (like btop). |
+| `Esc` | Leave filter input and restore the previously committed filter. |
 
 #### Menu / Overlays
 
 | Key | Action |
 |---|---|
-| `Menu: ↑/↓, j/k, Tab` | Select `Options` / `Help` / `Quit` (`Shift-Tab` moves up). |
+| `Menu: ↑/↓, j/k, Tab` | Select Options / Help / Quit. |
 | `Menu: Enter/Space` | Activate selected menu button. |
 | `Menu: Esc/q/Q` | Close menu. |
 | `Options: ↑/↓, j/k` | Select option row. |
-| `Options: ←/→` | Change/toggle selected option (`update_ms` adjusts by ±100 ms). |
-| `Options: Enter` | Edit `update_ms` or advance value. |
+| `Options: ←/→` | Change/toggle selected option. |
+| `Options: Enter` | Edit update_ms or advance value. |
 | `Options: Esc/q/Q` | Close options and return to menu. |
-| `update_ms` / `clock_format` editor | Type to edit; `Backspace` deletes; `Enter` commits; `Esc` cancels. |
-| `Help: ↑/↓/j/k/PgUp/PgDn` | Scroll help text. `Esc/q/Q` closes. |
+| `update_ms / clock_format editor` | Type to edit; Backspace deletes; Enter commits; Esc cancels. |
+| `Help: ↑/↓/j/k/PgUp/PgDn` | Scroll help text. Esc/q/Q closes. |
 
 ### Mouse Support
 
 | Mouse Action | Effect |
 |---|---|
-| `Wheel up/down` | Scroll process rows (±3 rows). |
+| `Wheel up/down` | Scroll process rows. |
 | `Left click row` | Select row. |
 | `Left click [+]/[-]` | Expand/collapse node. |
 | `Double click row` | Expand/collapse node. |
 | `Click column header` | Sort by that column; click the active column again to reverse. |
 | `Menu click` | Click button to activate; click outside to close menu. |
-| `Options: click / wheel` | Click row to select, click the selected row to edit/advance; wheel moves the selection; click outside closes. |
-| `Help: wheel / click` | Wheel scrolls (a scrollbar shows when the text overflows); click outside closes. |
+| `Options: click / wheel` | Click row to select, click the selected row to edit/advance; wheel moves; click outside closes. |
+| `Help: wheel / click` | Wheel scrolls; click outside closes. |
+<!-- END GENERATED: key-tables -->
 
 ### Options & Configuration (`pspp.conf`)
 
@@ -318,9 +352,12 @@ Agents stay stateless across invocations and share durable context exclusively t
 ### Checks & Tests
 
 ```sh
-cargo test                                # unit + CLI integration tests
+cargo test                                # unit, fixture-driven model, TestBackend screen, and CLI integration tests
 cargo clippy --all-targets -- -D warnings # lint gate
 cargo fmt --check                         # formatting check
 cargo doc --no-deps                       # verify rustdoc builds cleanly
 man ./doc/pspp.1                          # preview the manual page
+PSPP_UPDATE_DOCS=1 cargo test --lib       # regenerate the README key tables/screen capture and the man page key bindings
 ```
+
+The key-binding tables in this README and in `doc/pspp.1` (and the screen capture above) are generated from `src/ui/help.rs` and the renderer; `cargo test` fails if they drift, and the command above rewrites them. The minimum supported Rust version is 1.88 (`rust-version` in `Cargo.toml`); CI runs on `macos-latest` and `ubuntu-latest`.

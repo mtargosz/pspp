@@ -9,3 +9,6 @@ pub mod config;
 pub mod model;
 pub mod query;
 pub mod ui;
+
+#[cfg(test)]
+mod docsync;

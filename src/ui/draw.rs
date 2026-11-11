@@ -15,6 +15,11 @@ use crate::ui::graph;
 use crate::ui::help;
 
 const PCT_COL_WIDTH: u16 = 6;
+const COMM_MIN_WIDTH: u16 = 12;
+const OWN_COL_WIDTH: u16 = 10;
+const CHILDREN_COL_WIDTH: u16 = 8;
+const METER_MIN_WIDTH: u16 = 12;
+const METER_MAX_WIDTH: u16 = 30;
 const MEM_BOX_HEIGHT: u16 = 6;
 const MEM_BOX_MIN_INNER_HEIGHT: u16 = 12;
 
@@ -80,15 +85,11 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
                 Style::default().fg(theme.color(theme.main_fg)),
             ),
             Span::styled(
-                format!("  agg {}", agg_mode_label(app.agg_mode)),
+                format!("  agg {}", app.agg_mode),
                 Style::default().fg(theme.color(theme.main_fg)),
             ),
             Span::styled(
-                format!(
-                    "  sort {}{}",
-                    sort_label(app.sort_by),
-                    sort_dir_label(app.sort_desc)
-                ),
+                format!("  sort {}{}", app.sort_by, sort_dir_label(app.sort_desc)),
                 Style::default().fg(theme.color(theme.main_fg)),
             ),
             Span::styled(
@@ -839,22 +840,36 @@ fn pid_column_width(max_pid: i32) -> u16 {
     u16::try_from(digits).unwrap_or(10).max(5)
 }
 
+/// Meter column width: grows with the terminal (`width / 6`, 12..=30 cells) before COMM takes
+/// the remaining slack, but never squeezes COMM below its minimum.
+fn meter_width(total_width: u16, fixed_width: u16) -> u16 {
+    let desired = (total_width / 6).clamp(METER_MIN_WIDTH, METER_MAX_WIDTH);
+    let room = total_width
+        .saturating_sub(fixed_width)
+        .saturating_sub(COMM_MIN_WIDTH);
+    desired.min(room)
+}
+
 fn build_column_layout(area: Rect, agg_header: &str, pid_width: u16) -> Vec<Rect> {
-    let agg_len = agg_header.chars().count().max(10);
+    let agg_len = u16::try_from(agg_header.chars().count())
+        .unwrap_or(10)
+        .max(10);
+    // Everything except COMM and the meter, including the six one-cell gaps between columns.
+    let fixed = pid_width + OWN_COL_WIDTH + agg_len + PCT_COL_WIDTH + CHILDREN_COL_WIDTH + 6;
     Layout::horizontal([
-        Constraint::Min(12),
+        Constraint::Min(COMM_MIN_WIDTH),
         Constraint::Length(1),
         Constraint::Length(pid_width),
         Constraint::Length(1),
-        Constraint::Length(10),
+        Constraint::Length(OWN_COL_WIDTH),
         Constraint::Length(1),
-        Constraint::Length(u16::try_from(agg_len).unwrap_or(10)),
+        Constraint::Length(agg_len),
         Constraint::Length(1),
         Constraint::Length(PCT_COL_WIDTH),
         Constraint::Length(1),
-        Constraint::Length(8),
+        Constraint::Length(CHILDREN_COL_WIDTH),
         Constraint::Length(1),
-        Constraint::Length(12),
+        Constraint::Length(meter_width(area.width, fixed)),
     ])
     .split(area)
     .to_vec()
@@ -870,22 +885,6 @@ fn data_column_rects(columns: &[Rect]) -> [Rect; 7] {
         columns[10],
         columns[12],
     ]
-}
-
-fn agg_mode_label(mode: crate::model::AggMode) -> &'static str {
-    match mode {
-        crate::model::AggMode::Rollup => "rollup",
-        crate::model::AggMode::Flat => "flat",
-    }
-}
-
-fn sort_label(sort_by: crate::model::SortBy) -> &'static str {
-    match sort_by {
-        crate::model::SortBy::Aggregated => "agg",
-        crate::model::SortBy::Own => "own",
-        crate::model::SortBy::Pid => "pid",
-        crate::model::SortBy::Comm => "comm",
-    }
 }
 
 fn sort_dir_label(desc: bool) -> &'static str {
@@ -1025,6 +1024,21 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn meter_width_scales_with_the_terminal_and_spares_comm() {
+        let fixed = 5 + 10 + 14 + 6 + 8 + 6;
+        // Grows 12 -> 30 as the terminal widens, then stays at 30 while COMM takes the slack.
+        assert_eq!(super::meter_width(80, fixed), 13);
+        assert_eq!(super::meter_width(110, fixed), 18);
+        assert_eq!(super::meter_width(150, fixed), 25);
+        assert_eq!(super::meter_width(180, fixed), 30);
+        assert_eq!(super::meter_width(400, fixed), 30);
+        // Narrow terminals shrink the meter before COMM drops below 12 cells.
+        assert_eq!(super::meter_width(66, fixed), 66 - fixed - 12);
+        assert_eq!(super::meter_width(60, fixed), 0);
+        assert_eq!(super::meter_width(0, fixed), 0);
     }
 
     #[test]
@@ -1256,17 +1270,44 @@ mod screens {
     }
 
     fn render(app: &mut App) -> (Vec<String>, Buffer) {
-        let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("terminal");
+        render_sized(app, WIDTH, HEIGHT)
+    }
+
+    fn render_sized(app: &mut App, width: u16, height: u16) -> (Vec<String>, Buffer) {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal.draw(|frame| draw(frame, app)).expect("draw");
         let buffer = terminal.backend().buffer().clone();
-        let lines = (0..HEIGHT)
+        let lines = (0..height)
             .map(|y| {
-                (0..WIDTH)
+                (0..width)
                     .map(|x| buffer[(x, y)].symbol().to_owned())
                     .collect::<String>()
             })
             .collect();
         (lines, buffer)
+    }
+
+    #[test]
+    fn readme_screen_capture_matches_the_renderer() {
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        let (lines, _) = render_sized(&mut app, 100, 24);
+        let capture = lines
+            .iter()
+            .map(|line| line.trim_end())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = format!(
+            "A plain-text capture of the TUI, rendered by the test suite from a synthetic process tree \
+             (100×24; the green→red usage gradient and the selected-row highlight are colours and do \
+             not show up in text). `launchd` is the selected row.\n\n```text\n{capture}\n```\n\n\
+             To capture your own: run `pspp` in a terminal about 120 columns wide and use the terminal's \
+             screenshot tool (macOS: `Cmd-Shift-4`, then `Space` and click the window)."
+        );
+        crate::docsync::sync_block(
+            "README.md",
+            crate::docsync::markdown_markers("screen"),
+            &body,
+        );
     }
 
     /// The table row for `comm`: `(y, text without the frame's left border)`.
@@ -1303,7 +1344,7 @@ mod screens {
             .map(|byte| header[..byte].chars().count())
             .unwrap_or(0);
         let empty = app.theme.color(app.theme.meter_bg);
-        (meter_x..meter_x + 12)
+        (meter_x..meter_x + 18)
             .filter(|x| {
                 let cell = &buffer[(
                     u16::try_from(*x).unwrap_or(0),
@@ -1433,11 +1474,12 @@ mod screens {
     fn meter_fill_tracks_each_rows_share_of_the_largest_sum() {
         let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
         let (lines, buffer) = render(&mut app);
-        // Scale = launchd's 1150 MiB over 12 cells (launchd itself is the selected row).
+        // At 110 columns the meter is 18 cells wide; scale = launchd's 1150 MiB (launchd itself is
+        // the selected row, drawn solid).
         let expected = [
-            ("shell", 6),
-            ("editor", 3),
-            ("daemon", 5),
+            ("shell", 9),
+            ("editor", 5),
+            ("daemon", 8),
             ("build", 1),
             ("stray", 1),
             ("plugin", 0),

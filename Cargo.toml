@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "ps++ — interactive memory usage grouped by parent process, btop-style"
 license = "MIT"
+# Newest MSRV among the locked dependencies (darling/instability via ratatui need 1.88).
+rust-version = "1.88"
+repository = "https://github.com/mtargosz/pspp"
+readme = "README.md"
+keywords = ["tui", "process", "memory", "monitor", "btop"]
+categories = ["command-line-utilities", "visualization"]
 
 [dependencies]
 ratatui = "0.29"

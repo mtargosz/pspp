@@ -77,17 +77,38 @@ fn high_min_reports_no_matches() {
 }
 
 #[test]
-fn invalid_mem_lists_available_kinds() {
+fn invalid_mem_lists_possible_values() {
     let output = run(&["--mem", "not-a-kind"]);
-    assert!(
-        !output.status.success(),
-        "expected non-zero exit code for invalid --mem"
-    );
+    assert_eq!(output.status.code(), Some(2), "usage error");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("available kinds"),
-        "expected helpful mem error with available kinds, got: {stderr}"
+        stderr.contains("possible values") && stderr.contains("rss") && stderr.contains("vsz"),
+        "expected clap to list the valid kinds, got: {stderr}"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn kinds_from_other_platforms_are_rejected_with_the_valid_list() {
+    let output = run(&["--mem", "pss"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("footprint") && !stderr.contains("pss, "),
+        "{stderr}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn kinds_from_other_platforms_are_rejected_with_the_valid_list() {
+    let output = run(&["--mem", "footprint"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("pss") && !stderr.contains("footprint,"),
+        "{stderr}"
     );
 }
 
