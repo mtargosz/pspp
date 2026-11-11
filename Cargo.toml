@@ -1,0 +1,21 @@
+[package]
+name = "pspp"
+version = "0.1.0"
+edition = "2021"
+description = "ps++ — interactive memory usage grouped by parent process, btop-style"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+sysinfo = "0.33"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dirs = "5"
+libc = "0.2"
+
+[profile.release]
+lto = true
+strip = true
