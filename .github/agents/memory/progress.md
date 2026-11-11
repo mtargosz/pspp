@@ -12,7 +12,7 @@
 - [x] 5. query-mode — pspp <query> stdout mode (filters, --json)
 - [x] 6. tui-skeleton — ratatui shell: alt screen, mouse, tick loop, resize, quit
 - [x] 7. theme-gradients — theme struct, 101-step gradients, 256-color fallback
-- [ ] 8. tree-table-ui — expand/collapse, kb+mouse nav, gradient meters, aggregation toggle
+- [x] 8. tree-table-ui — expand/collapse, kb+mouse nav, gradient meters, aggregation toggle
 - [ ] 9. graphs — braille history graph + meter bars (block/tty fallbacks)
 - [ ] 10. menus — Esc overlay, Options (General-style), config persistence
 - [ ] 11. help — plain-English memory explanations, filter (f, /)
@@ -89,3 +89,18 @@
   - Deviation: grey (r==g==b) colors use btop's 232+ ramp (<8→16, >248→231) instead of the cube;
     non-grey use the cube formula. `theme.rs` has module-level `allow(dead_code)` until later
     milestones consume the full API.
+
+### 2026-11-11 — coder
+- Completed milestone 8 interactive tree table UI:
+  - Expanded `App` state with expanded-node set, cursor/scroll, sort key+direction, remembered
+    selected pid, and draw-provided row hit-test metadata for mouse interactions.
+  - Added key handling: `↑/↓/j/k`, `PgUp/PgDn`, `Home/End`, `g/G`, `Space/Enter`, `←/→`,
+    `e` (agg mode), `m` (mem kind cycle), `s` (sort cycle), `S`/`r` (reverse).
+  - Added mouse handling: wheel scroll (±3 rows), row click select, marker click and double-click
+    row expand/collapse.
+  - Reworked draw path to render a full process tree table with btop-style tree glyphs/markers,
+    COMM/PID/OWN/AGG/CHILDREN columns, per-row `■` meter, selected-row full highlight, and status+hint bars.
+  - Added pure helper tests for tree prefix glyphs, meter fill computation, cursor/scroll clamp,
+    and selection relocation logic.
+- Decision captured in architecture: expanded-set model (default all expanded), meter scaling against
+  largest visible aggregate, and table hit-test cache in `App`.

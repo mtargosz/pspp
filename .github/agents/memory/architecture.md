@@ -28,11 +28,12 @@ src/
     mod.rs           — `run_tui`: terminal lifecycle guard (alt screen/raw/mouse/cursor),
                        panic hook restoration, crossterm event loop + tick scheduling
     app.rs           — `App` state: snapshot/tree, agg mode, mem kind, update timing,
-                       key/mouse handlers, periodic refresh on ticks
-    draw.rs          — milestone-6 minimal frame draw function with rounded border + status lines
+                       tree expand/collapse state, sorting, selection+scroll, key/mouse handlers,
+                       periodic refresh on ticks, row hit-test cache for mouse toggles
+    draw.rs          — rounded-border frame, interactive process tree table, status+hint bars,
+                       gradient-colored memory columns, btop-style meters and tree glyphs
     theme.rs         — named theme colors + 101-step gradients, 256-color fallback
     graph.rs         — braille/block/tty history graph + ■ meter widgets (ratatui custom widgets)
-    table.rs         — process tree table: expand/collapse, selection, gradient-colored mem columns
     menu.rs          — Esc overlay (Options/Help/Quit), Options editor, Help screens
   config.rs          — ~/.config/pspp/pspp.conf (TOML), save_on_exit
 tests/
@@ -68,6 +69,9 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - `ProcTree::sorted_pids(..., SortBy::{Aggregated, Own, Pid, Comm}) -> Vec<i32>` (stable)
 - `ProcTree::flatten_visible(&HashSet<i32>) -> Vec<VisibleRow>`
   - depth-first visible rows: `{ pid, depth, has_children, is_last_child }`; synthetic root not emitted
+- `ProcTree::flatten_visible_sorted(&HashSet<i32>, &HashMap<i32, AggregateRow>, SortBy, descending)`
+  - same shape as `flatten_visible`, but sibling/root order follows the selected UI sort key+direction
+  - tie-breaker is PID for deterministic order
 
 ## Query-mode API (milestone 5)
 
@@ -91,3 +95,18 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
     `selected_fg`, `inactive_fg`, `meter_bg`, `graph_text`, `div_line`, `gradient_{start,mid,end}`.
   - `color(Rgb) -> Color` (truecolor `Color::Rgb`, else `Color::Indexed` via grey ramp / 6×6×6 cube).
   - `usage_rgb/usage_color(pct)` and `graph_rgb/graph_color(pct)` (pct clamped to 100).
+
+## Tree table UI (milestone 8)
+
+- Expansion model: `HashSet<pid>` of expanded nodes; default is **all nodes expanded** (btop-like tree mode).
+  - On refresh, existing collapsed/expanded choices are preserved for surviving pids.
+  - New pids default to expanded.
+- Selection model: remembered `selected_pid` + `(cursor, scroll)` indices over visible rows.
+  - Refresh and sort/mode/kind changes re-locate cursor by `selected_pid` when still visible.
+- Sorting model: key (`agg|own|pid|comm`) + direction, applied per sibling/root group while preserving tree structure.
+- Mouse hit-test model: draw stores current body rect + rendered-row toggle marker ranges (`[+]/[-]`) in `App`.
+  - Wheel: cursor ±3 rows.
+  - Left click row: select.
+  - Left click marker or double-click row: toggle expand/collapse.
+- Meter scale decision: row meter fill uses `row.aggregated / max(visible aggregated)` (not system total).
+  - OWN/AGG text colors still use `% of system total`.

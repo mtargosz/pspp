@@ -64,7 +64,7 @@ pub fn run_tui(update_ms: u64) -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     while !app.should_quit {
-        terminal.draw(|frame| draw::draw(frame, &app))?;
+        terminal.draw(|frame| draw::draw(frame, &mut app))?;
 
         let timeout = app.poll_timeout(Instant::now());
         if event::poll(timeout)? {

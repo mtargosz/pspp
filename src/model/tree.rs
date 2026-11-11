@@ -121,6 +121,17 @@ impl ProcTree {
         self.nodes.get(&pid).map(|node| &node.rec)
     }
 
+    pub fn parent_pid(&self, pid: i32) -> Option<i32> {
+        self.nodes.get(&pid).and_then(|node| node.parent)
+    }
+
+    pub fn child_pids(&self, pid: i32) -> &[i32] {
+        self.nodes
+            .get(&pid)
+            .map(|node| node.children.as_slice())
+            .unwrap_or(&[])
+    }
+
     pub fn aggregate(&self, kind: MemKind, mode: AggMode) -> HashMap<i32, AggregateRow> {
         match mode {
             AggMode::Rollup => self.rollup(kind),
@@ -284,6 +295,58 @@ impl ProcTree {
         rows
     }
 
+    pub fn flatten_visible_sorted(
+        &self,
+        expanded: &HashSet<i32>,
+        rows: &HashMap<i32, AggregateRow>,
+        sort_by: SortBy,
+        descending: bool,
+    ) -> Vec<VisibleRow> {
+        if sort_by == SortBy::Pid && !descending {
+            return self.flatten_visible(expanded);
+        }
+
+        let mut flattened = Vec::with_capacity(self.nodes.len());
+        let mut visited = HashSet::with_capacity(self.nodes.len());
+        let mut stack: Vec<(i32, usize, bool)> = Vec::new();
+
+        let roots = self.sorted_pid_list(&self.root_children, rows, sort_by, descending);
+        for (idx, pid) in roots.iter().enumerate().rev() {
+            stack.push((*pid, 0, idx == roots.len().saturating_sub(1)));
+        }
+
+        while let Some((pid, depth, is_last_child)) = stack.pop() {
+            if !visited.insert(pid) {
+                continue;
+            }
+
+            let Some(node) = self.nodes.get(&pid) else {
+                continue;
+            };
+
+            let has_children = !node.children.is_empty();
+            flattened.push(VisibleRow {
+                pid,
+                depth,
+                has_children,
+                is_last_child,
+            });
+
+            if has_children && expanded.contains(&pid) {
+                let children = self.sorted_pid_list(&node.children, rows, sort_by, descending);
+                for (idx, child) in children.iter().enumerate().rev() {
+                    stack.push((
+                        *child,
+                        depth.saturating_add(1),
+                        idx == children.len().saturating_sub(1),
+                    ));
+                }
+            }
+        }
+
+        flattened
+    }
+
     fn break_cycles(ordered_pids: &[i32], parents: &mut HashMap<i32, Option<i32>>) {
         let mut state: HashMap<i32, u8> = ordered_pids.iter().map(|pid| (*pid, 0_u8)).collect();
 
@@ -414,6 +477,65 @@ impl ProcTree {
         let a_val = a.map(&value).unwrap_or(0);
         let b_val = b.map(value).unwrap_or(0);
         b_val.cmp(&a_val)
+    }
+
+    fn sorted_pid_list(
+        &self,
+        pids: &[i32],
+        rows: &HashMap<i32, AggregateRow>,
+        sort_by: SortBy,
+        descending: bool,
+    ) -> Vec<i32> {
+        let mut sorted = pids.to_vec();
+        sorted.sort_by(|a, b| self.compare_pid_for_sort(*a, *b, rows, sort_by, descending));
+        sorted
+    }
+
+    fn compare_pid_for_sort(
+        &self,
+        left: i32,
+        right: i32,
+        rows: &HashMap<i32, AggregateRow>,
+        sort_by: SortBy,
+        descending: bool,
+    ) -> Ordering {
+        let compare = match sort_by {
+            SortBy::Aggregated => rows
+                .get(&left)
+                .map(|row| row.aggregated)
+                .unwrap_or_default()
+                .cmp(
+                    &rows
+                        .get(&right)
+                        .map(|row| row.aggregated)
+                        .unwrap_or_default(),
+                ),
+            SortBy::Own => rows
+                .get(&left)
+                .map(|row| row.own)
+                .unwrap_or_default()
+                .cmp(&rows.get(&right).map(|row| row.own).unwrap_or_default()),
+            SortBy::Pid => left.cmp(&right),
+            SortBy::Comm => self
+                .nodes
+                .get(&left)
+                .map(|node| node.rec.comm.to_ascii_lowercase())
+                .unwrap_or_default()
+                .cmp(
+                    &self
+                        .nodes
+                        .get(&right)
+                        .map(|node| node.rec.comm.to_ascii_lowercase())
+                        .unwrap_or_default(),
+                ),
+        };
+
+        let compare = compare.then_with(|| left.cmp(&right));
+        if descending {
+            compare.reverse()
+        } else {
+            compare
+        }
     }
 }
 

@@ -1,15 +1,16 @@
-use ratatui::layout::{Constraint, Layout};
+use std::ops::Range;
+
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui::Frame;
 
-use crate::collect::Snapshot;
-use crate::model::{AggMode, MemKind};
-use crate::ui::app::App;
+use crate::query::format_size;
+use crate::ui::app::{App, DisplayRow};
 
-pub fn draw(frame: &mut Frame<'_>, app: &App) {
-    let theme = &app.theme;
+pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
+    let theme = app.theme.clone();
     let area = frame.area();
     let fg = |rgb| Style::default().fg(theme.color(rgb));
 
@@ -20,99 +21,432 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
     if let Some(bg) = theme.main_bg {
         block = block.style(Style::default().bg(theme.color(bg)));
     }
+
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let _ = app.last_tick_at;
-    let _ = app.last_mouse_position;
-    let _ = app.tree.root_children().len();
-
-    let rows = Layout::vertical([
+    let layout = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
     .split(inner);
 
-    let label = fg(theme.main_fg);
-    let total_pct = usage_percent(
-        total_used(&app.snapshot, app.mem_kind),
-        app.snapshot.total_mem,
-    );
-    let summary = Line::from(vec![
-        Span::styled(format!("processes: {}  ", app.snapshot.procs.len()), label),
-        Span::styled("total: ", label),
+    let status_area = layout[0];
+    let header_area = layout[1];
+    let body_area = layout[2];
+    let hint_area = layout[3];
+
+    let total_used = app
+        .rows()
+        .iter()
+        .fold(0_u64, |sum, row| sum.saturating_add(row.own));
+    let total_pct = percentage(total_used, app.snapshot.total_mem);
+    let status = Line::from(vec![
         Span::styled(
-            format_gib(app.snapshot.total_mem),
-            Style::default().fg(theme.usage_color(total_pct)),
+            format!("{} procs  ", app.snapshot.procs.len()),
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
+        Span::styled("mem ", fg(theme.inactive_fg)),
+        Span::styled(
+            app.mem_kind.label().to_ascii_uppercase(),
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
+        Span::styled(
+            format!("  agg {}", agg_mode_label(app.agg_mode)),
+            Style::default().fg(theme.color(theme.main_fg)),
         ),
         Span::styled(
             format!(
-                "  mem: {}  agg: {}  tick: {}ms",
-                mem_kind_label(app.mem_kind),
-                agg_mode_label(app.agg_mode),
-                app.update_ms
+                "  sort {}{}",
+                sort_label(app.sort_by),
+                sort_dir_label(app.sort_desc)
             ),
-            label,
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
+        Span::styled(
+            format!("  update {}ms", app.update_ms),
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
+        Span::styled(
+            format!("  total {}", format_size(app.snapshot.total_mem, false)),
+            Style::default().fg(theme.usage_color(total_pct)),
         ),
     ]);
+    frame.render_widget(Paragraph::new(status), status_area);
 
-    frame.render_widget(Paragraph::new(summary), rows[0]);
+    if body_area.width == 0 {
+        app.clear_table_hit_test();
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("q", fg(theme.hi_fg)),
+                Span::styled(" quit", fg(theme.inactive_fg)),
+            ])),
+            hint_area,
+        );
+        return;
+    }
+
+    let agg_header = {
+        let approx = app.rows().iter().any(|row| row.aggregated_approximate);
+        if approx {
+            format!("{} Σ~", app.mem_kind.label().to_ascii_uppercase())
+        } else {
+            format!("{} Σ", app.mem_kind.label().to_ascii_uppercase())
+        }
+    };
+
+    let col_layout = build_column_layout(header_area, &agg_header);
+    let data_col_rects = data_column_rects(&col_layout);
+
+    render_header(frame, &data_col_rects, &agg_header, app);
+
+    let body_height = usize::from(body_area.height);
+    app.set_viewport_height(body_height);
+
+    if body_height == 0 {
+        app.clear_table_hit_test();
+        render_hint(frame, hint_area, app);
+        return;
+    }
+
+    let (render_start, toggle_zones) = render_body(frame, body_area, &data_col_rects, app);
+    app.set_table_hit_test(body_area, data_col_rects[0].x, render_start, toggle_zones);
+    render_hint(frame, hint_area, app);
+}
+
+fn render_header(frame: &mut Frame<'_>, columns: &[Rect; 6], agg_header: &str, app: &App) {
+    let theme = &app.theme;
+    let style = Style::default().fg(theme.color(theme.title));
+
+    frame.render_widget(Paragraph::new("COMM").style(style), columns[0]);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("q", fg(theme.hi_fg)),
-            Span::styled(" quit — more coming", fg(theme.inactive_fg)),
-        ])),
-        rows[2],
+        Paragraph::new("PID")
+            .style(style)
+            .alignment(Alignment::Right),
+        columns[1],
     );
+    frame.render_widget(
+        Paragraph::new("OWN")
+            .style(style)
+            .alignment(Alignment::Right),
+        columns[2],
+    );
+    frame.render_widget(
+        Paragraph::new(agg_header)
+            .style(style)
+            .alignment(Alignment::Right),
+        columns[3],
+    );
+    frame.render_widget(
+        Paragraph::new("CHILDREN")
+            .style(style)
+            .alignment(Alignment::Right),
+        columns[4],
+    );
+    frame.render_widget(Paragraph::new("METER").style(style), columns[5]);
 }
 
-fn total_used(snapshot: &Snapshot, kind: MemKind) -> u64 {
-    snapshot
-        .procs
-        .iter()
-        .filter_map(|proc| kind.get(&proc.mem))
-        .fold(0, u64::saturating_add)
+fn render_body(
+    frame: &mut Frame<'_>,
+    body_area: Rect,
+    columns: &[Rect; 6],
+    app: &App,
+) -> (usize, Vec<Option<Range<u16>>>) {
+    let rows = app.rows();
+    let start = app.scroll();
+    let end = (start + usize::from(body_area.height)).min(rows.len());
+    let max_visible_agg = rows.iter().map(|row| row.aggregated).max().unwrap_or(0);
+
+    let mut toggle_zones = Vec::with_capacity(usize::from(body_area.height));
+
+    for (line_idx, row_idx) in (start..end).enumerate() {
+        let row_rect = Rect {
+            x: body_area.x,
+            y: body_area.y + u16::try_from(line_idx).unwrap_or(u16::MAX),
+            width: body_area.width,
+            height: 1,
+        };
+
+        let row = &rows[row_idx];
+        let selected = row_idx == app.cursor();
+        if selected {
+            frame.render_widget(
+                Block::default().style(
+                    Style::default()
+                        .bg(app.theme.color(app.theme.selected_bg))
+                        .fg(app.theme.color(app.theme.selected_fg)),
+                ),
+                row_rect,
+            );
+        }
+
+        render_row_cells(frame, row, columns, app, max_visible_agg, selected);
+
+        let comm_width = columns[0].width;
+        let zone = row.toggle_marker.as_ref().and_then(|marker| {
+            if comm_width == 0 {
+                return None;
+            }
+            let start_col = columns[0]
+                .x
+                .saturating_add(u16::try_from(marker.start).unwrap_or(u16::MAX));
+            let end_col = columns[0]
+                .x
+                .saturating_add(u16::try_from(marker.end).unwrap_or(u16::MAX));
+            let comm_end = columns[0].x.saturating_add(comm_width);
+            if start_col >= comm_end {
+                None
+            } else {
+                Some(start_col..end_col.min(comm_end))
+            }
+        });
+        toggle_zones.push(zone);
+    }
+
+    while toggle_zones.len() < usize::from(body_area.height) {
+        toggle_zones.push(None);
+    }
+
+    (start, toggle_zones)
 }
 
-fn usage_percent(used: u64, total: u64) -> u8 {
+fn render_row_cells(
+    frame: &mut Frame<'_>,
+    row: &DisplayRow,
+    columns: &[Rect; 6],
+    app: &App,
+    max_visible_agg: u64,
+    selected: bool,
+) {
+    let theme = &app.theme;
+    let selected_style = Style::default()
+        .fg(theme.color(theme.selected_fg))
+        .bg(theme.color(theme.selected_bg));
+
+    let comm_text = format!("{}{}", row.tree_prefix, row.comm);
+    let pid_text = row.pid.to_string();
+    let own_text = with_approx_suffix(format_size(row.own, false), row.own_approximate);
+    let agg_text = with_approx_suffix(
+        format_size(row.aggregated, false),
+        row.aggregated_approximate,
+    );
+    let children_text = row.child_count.to_string();
+    let meter_width = usize::from(columns[5].width);
+
+    let own_pct = percentage(row.own, app.snapshot.total_mem);
+    let agg_pct = percentage(row.aggregated, app.snapshot.total_mem);
+    let meter_pct = percentage(row.aggregated, max_visible_agg);
+
+    let default_style = Style::default().fg(theme.color(theme.main_fg));
+    frame.render_widget(
+        Paragraph::new(comm_text)
+            .style(if selected {
+                selected_style
+            } else {
+                default_style
+            })
+            .alignment(Alignment::Left),
+        columns[0],
+    );
+    frame.render_widget(
+        Paragraph::new(pid_text)
+            .style(if selected {
+                selected_style
+            } else {
+                default_style
+            })
+            .alignment(Alignment::Right),
+        columns[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(own_text)
+            .style(if selected {
+                selected_style
+            } else {
+                Style::default().fg(theme.usage_color(own_pct))
+            })
+            .alignment(Alignment::Right),
+        columns[2],
+    );
+
+    frame.render_widget(
+        Paragraph::new(agg_text)
+            .style(if selected {
+                selected_style
+            } else {
+                Style::default().fg(theme.usage_color(agg_pct))
+            })
+            .alignment(Alignment::Right),
+        columns[3],
+    );
+
+    frame.render_widget(
+        Paragraph::new(children_text)
+            .style(if selected {
+                selected_style
+            } else {
+                default_style
+            })
+            .alignment(Alignment::Right),
+        columns[4],
+    );
+
+    let meter_line = meter_line(
+        meter_width,
+        row.aggregated,
+        max_visible_agg,
+        app,
+        selected,
+        meter_pct,
+    );
+    frame.render_widget(Paragraph::new(meter_line), columns[5]);
+}
+
+fn meter_line(
+    width: usize,
+    value: u64,
+    scale: u64,
+    app: &App,
+    selected: bool,
+    meter_pct: u8,
+) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+
+    let theme = &app.theme;
+    let selected_style = Style::default()
+        .fg(theme.color(theme.selected_fg))
+        .bg(theme.color(theme.selected_bg));
+
+    if selected {
+        return Line::from(Span::styled("■".repeat(width), selected_style));
+    }
+
+    let filled = meter_fill_blocks(value, scale, width);
+    let empty = width.saturating_sub(filled);
+    let filled_style = Style::default().fg(theme.usage_color(meter_pct));
+    let empty_style = Style::default().fg(theme.color(theme.meter_bg));
+
+    Line::from(vec![
+        Span::styled("■".repeat(filled), filled_style),
+        Span::styled("■".repeat(empty), empty_style),
+    ])
+}
+
+fn render_hint(frame: &mut Frame<'_>, hint_area: Rect, app: &App) {
+    let theme = &app.theme;
+    let hint = Line::from(vec![
+        Span::styled(
+            "↑/↓ j/k PgUp/PgDn Home/End g/G",
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
+        Span::styled("  ←/→", Style::default().fg(theme.color(theme.main_fg))),
+        Span::styled(
+            "  Space/Enter",
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
+        Span::styled(
+            "  e agg  m mem  s sort  S/r rev",
+            Style::default().fg(theme.color(theme.main_fg)),
+        ),
+        Span::styled("  q quit", Style::default().fg(theme.color(theme.hi_fg))),
+    ]);
+    frame.render_widget(Paragraph::new(hint), hint_area);
+}
+
+fn build_column_layout(area: Rect, agg_header: &str) -> Vec<Rect> {
+    let agg_len = agg_header.chars().count().max(10);
+    Layout::horizontal([
+        Constraint::Min(12),
+        Constraint::Length(1),
+        Constraint::Length(6),
+        Constraint::Length(1),
+        Constraint::Length(10),
+        Constraint::Length(1),
+        Constraint::Length(u16::try_from(agg_len).unwrap_or(10)),
+        Constraint::Length(1),
+        Constraint::Length(8),
+        Constraint::Length(1),
+        Constraint::Length(12),
+    ])
+    .split(area)
+    .to_vec()
+}
+
+fn data_column_rects(columns: &[Rect]) -> [Rect; 6] {
+    [
+        columns[0],
+        columns[2],
+        columns[4],
+        columns[6],
+        columns[8],
+        columns[10],
+    ]
+}
+
+fn agg_mode_label(mode: crate::model::AggMode) -> &'static str {
+    match mode {
+        crate::model::AggMode::Rollup => "rollup",
+        crate::model::AggMode::Flat => "flat",
+    }
+}
+
+fn sort_label(sort_by: crate::model::SortBy) -> &'static str {
+    match sort_by {
+        crate::model::SortBy::Aggregated => "agg",
+        crate::model::SortBy::Own => "own",
+        crate::model::SortBy::Pid => "pid",
+        crate::model::SortBy::Comm => "comm",
+    }
+}
+
+fn sort_dir_label(desc: bool) -> &'static str {
+    if desc {
+        "↓"
+    } else {
+        "↑"
+    }
+}
+
+fn with_approx_suffix(mut value: String, approximate: bool) -> String {
+    if approximate {
+        value.push('~');
+    }
+    value
+}
+
+fn percentage(value: u64, total: u64) -> u8 {
     if total == 0 {
         return 0;
     }
-    (u128::from(used) * 100 / u128::from(total)).min(100) as u8
+    (u128::from(value) * 100 / u128::from(total)).min(100) as u8
 }
 
-fn mem_kind_label(kind: MemKind) -> &'static str {
-    match kind {
-        MemKind::Rss => "rss",
-        MemKind::Vsz => "vsz",
-        MemKind::Footprint => "footprint",
-        MemKind::Pss => "pss",
-        MemKind::Uss => "uss",
-        MemKind::Swap => "swap",
+pub fn meter_fill_blocks(value: u64, scale: u64, width: usize) -> usize {
+    if width == 0 || scale == 0 {
+        return 0;
     }
-}
 
-fn agg_mode_label(mode: AggMode) -> &'static str {
-    match mode {
-        AggMode::Rollup => "rollup",
-        AggMode::Flat => "flat",
-    }
-}
-
-fn format_gib(bytes: u64) -> String {
-    let gib = bytes as f64 / 1024_f64.powi(3);
-    format!("{gib:.1} GiB")
+    ((u128::from(value) * width as u128 + (u128::from(scale) / 2)) / u128::from(scale))
+        .min(width as u128) as usize
 }
 
 #[cfg(test)]
 mod tests {
-    use super::usage_percent;
+    use super::meter_fill_blocks;
 
     #[test]
-    fn usage_percent_clamps_and_handles_zero_total() {
-        assert_eq!(usage_percent(5, 0), 0);
-        assert_eq!(usage_percent(50, 200), 25);
-        assert_eq!(usage_percent(500, 200), 100);
+    fn meter_fill_handles_zero_and_rounding() {
+        assert_eq!(meter_fill_blocks(0, 100, 10), 0);
+        assert_eq!(meter_fill_blocks(50, 100, 10), 5);
+        assert_eq!(meter_fill_blocks(51, 100, 10), 5);
+        assert_eq!(meter_fill_blocks(55, 100, 10), 6);
+        assert_eq!(meter_fill_blocks(100, 100, 10), 10);
+        assert_eq!(meter_fill_blocks(200, 100, 10), 10);
+        assert_eq!(meter_fill_blocks(1, 100, 0), 0);
     }
 }
