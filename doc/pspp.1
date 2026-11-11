@@ -306,9 +306,19 @@ Type printable characters (including spaces);
 .B Backspace
 deletes one character;
 .B Enter
-commits the filter;
+commits the filter and expands the ancestors of every match;
 .B Esc
-clears the filter and exits filter input.
+leaves filter input and restores the previously committed filter
+(use
+.B c
+in the table to clear it).
+The filtered tree honours expand/collapse state:
+.BR Space ,
+.BR Enter ,
+.B Left
+and
+.B Right
+keep working while a filter is active.
 .SS Menu, Options, and Help Overlays
 .TP
 .B Menu: Up/Down, j/k, Tab, Shift\-Tab
@@ -362,6 +372,11 @@ Select row.
 .TP
 .B Left click [+]/[\-] or double\-click row
 Toggle expand/collapse on that node.
+.TP
+.B Click column header
+Sort by that column
+.RB ( COMM ", " PID ", " OWN ", " "memory \(*S" ", " % );
+clicking the active column again reverses the direction.
 .TP
 .B Menu click
 Click a menu button to activate it; click outside the menu box to close it.

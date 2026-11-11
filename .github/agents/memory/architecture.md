@@ -120,8 +120,10 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - Sorting model: key (`agg|own|pid|comm`) + direction, applied per sibling/root group while preserving tree structure.
 - Mouse hit-test model: draw stores current body rect + rendered-row toggle marker ranges (`[+]/[-]`) in `App`.
   - Wheel: cursor ±3 rows.
+  - Left click a sortable column header (COMM/PID/OWN/Σ/%): sort by it; active column reverses.
+    Hit rects are stored per frame via `App::set_header_hit_test`.
   - Left click row: select.
-  - Left click marker or double-click row: toggle expand/collapse.
+  - Left click marker or double-click row (keyed by pid): toggle expand/collapse.
 - Meter scale decision: row meter fill uses `row.aggregated / max(visible aggregated)` (not system total).
   - OWN/AGG text colors still use `% of system total`.
 
@@ -182,7 +184,9 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - Filter behavior:
   - `f` or `/` enters input mode with status prompt `filter: <input>█`
   - input accepts printable characters (including spaces), `Backspace`, `Enter`, `Esc`
-  - `Enter` commits; `Esc` clears + exits; active filters show `filter: ...`; `c` clears
+  - `Enter` commits (and expands ancestors of matches); `Esc` restores the previously committed filter;
+    active filters show `filter: ...`; `c` clears
+  - the filtered tree uses the real `expanded` set (collapse/expand work while filtering)
   - matching is case-insensitive substring on `comm`
   - retained rows are matching nodes plus ancestors of matching descendants (context preserved)
   - matching `comm` is highlighted (`hi_fg`); non-matching ancestors are dimmed (`inactive_fg`)

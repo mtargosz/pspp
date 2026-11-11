@@ -246,7 +246,8 @@ pub struct App {
     comm_col_x: u16,
     rendered_start: usize,
     rendered_toggle_zones: Vec<Option<Range<u16>>>,
-    last_click: Option<(usize, Instant)>,
+    last_click: Option<(i32, Instant)>,
+    header_hits: Vec<(Rect, SortBy)>,
 
     menu_selected: MenuButton,
     menu_overlay_rect: Option<Rect>,
@@ -276,8 +277,12 @@ impl App {
     }
 
     pub fn from_settings(settings: UiSettings) -> Self {
+        Self::with_snapshot(collect::take_snapshot(), settings)
+    }
+
+    /// Builds the app around an existing snapshot (deterministic tests, injected data).
+    pub(crate) fn with_snapshot(snapshot: Snapshot, settings: UiSettings) -> Self {
         let update_ms = clamp_update_ms(settings.update_ms);
-        let snapshot = collect::take_snapshot();
         let tree = ProcTree::build(&snapshot);
         let now = Instant::now();
         let expanded: HashSet<i32> = snapshot.procs.iter().map(|proc_rec| proc_rec.pid).collect();
@@ -311,6 +316,7 @@ impl App {
             rendered_start: 0,
             rendered_toggle_zones: Vec::new(),
             last_click: None,
+            header_hits: Vec::new(),
             menu_selected: MenuButton::Options,
             menu_overlay_rect: None,
             menu_button_rects: [None, None, None],
@@ -522,7 +528,9 @@ impl App {
                 MouseEventKind::ScrollUp => self.move_cursor_by(-MOUSE_SCROLL_STEP),
                 MouseEventKind::ScrollDown => self.move_cursor_by(MOUSE_SCROLL_STEP),
                 MouseEventKind::Down(MouseButton::Left) => {
-                    self.handle_left_click(mouse_event.column, mouse_event.row)
+                    if !self.handle_header_click(mouse_event.column, mouse_event.row) {
+                        self.handle_left_click(mouse_event.column, mouse_event.row)
+                    }
                 }
                 _ => {}
             },
@@ -571,6 +579,12 @@ impl App {
         self.comm_col_x = 0;
         self.rendered_start = 0;
         self.rendered_toggle_zones.clear();
+        self.header_hits.clear();
+    }
+
+    /// Column-header click targets recorded by `draw` (sortable columns only).
+    pub fn set_header_hit_test(&mut self, hits: Vec<(Rect, SortBy)>) {
+        self.header_hits = hits;
     }
 
     pub fn set_menu_hit_test(&mut self, overlay_rect: Rect, button_rects: [Rect; 3]) {
@@ -619,7 +633,8 @@ impl App {
     fn on_key_filter_input(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => {
-                self.clear_filter();
+                // btop-style: abandon the edit and keep the previously committed filter.
+                self.filter_input = self.filter_committed.clone();
                 self.mode = AppMode::Normal;
             }
             KeyCode::Enter => {
@@ -819,14 +834,10 @@ impl App {
             let match_set = self.tree.filter_match_set(&self.filter_committed);
             self.filter_visible = match_set.visible.clone();
             self.filter_direct = match_set.direct;
-            let expanded_all: HashSet<i32> = self
-                .snapshot
-                .procs
-                .iter()
-                .map(|proc_rec| proc_rec.pid)
-                .collect();
+            // The real `expanded` set applies while filtering; matches' ancestors were expanded
+            // when the filter was committed, so matches start visible but can still be collapsed.
             let visible_all = self.tree.flatten_visible_sorted(
-                &expanded_all,
+                &self.expanded,
                 &aggregates,
                 self.sort_by,
                 self.sort_desc,
@@ -835,7 +846,7 @@ impl App {
                 .into_iter()
                 .filter(|row| self.filter_visible.contains(&row.pid))
                 .collect();
-            self.rows = build_display_rows(&self.tree, &aggregates, &visible, &expanded_all);
+            self.rows = build_display_rows(&self.tree, &aggregates, &visible, &self.expanded);
         }
         self.cursor = relocate_cursor_to_selected(self.selected_pid, &self.rows, self.cursor);
         self.apply_cursor_scroll_clamp();
@@ -972,6 +983,30 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// Clicking a sortable column header sorts by it; clicking the active column reverses.
+    /// Returns whether the click landed on a header.
+    fn handle_header_click(&mut self, column: u16, row: u16) -> bool {
+        let Some(key) = self
+            .header_hits
+            .iter()
+            .find(|(rect, _)| point_in_rect(*rect, column, row))
+            .map(|(_, key)| *key)
+        else {
+            return false;
+        };
+
+        self.last_click = None;
+        if key == self.sort_by {
+            self.reverse_sort();
+        } else {
+            self.sort_by = key;
+            // Text and PID columns read naturally ascending; memory columns largest-first.
+            self.sort_desc = matches!(key, SortBy::Aggregated | SortBy::Own);
+            self.rebuild_rows();
+        }
+        true
+    }
+
     fn handle_left_click(&mut self, column: u16, row: u16) {
         let Some((row_index, local_row)) = self.hit_test_row(row) else {
             self.last_click = None;
@@ -984,10 +1019,11 @@ impl App {
 
         let marker_hit = self.hit_toggle_zone(local_row, column);
         let now = Instant::now();
+        let clicked_pid = self.selected_pid;
         let double_click = self
             .last_click
-            .map(|(last_row, last_at)| {
-                last_row == row_index
+            .map(|(last_pid, last_at)| {
+                Some(last_pid) == clicked_pid
                     && now.saturating_duration_since(last_at)
                         <= Duration::from_millis(DOUBLE_CLICK_MS)
             })
@@ -1001,7 +1037,7 @@ impl App {
             return;
         }
 
-        self.last_click = Some((row_index, now));
+        self.last_click = clicked_pid.map(|pid| (pid, now));
     }
 
     fn hit_test_row(&self, row: u16) -> Option<(usize, usize)> {
@@ -1042,13 +1078,36 @@ impl App {
 
     fn commit_filter_input(&mut self) {
         self.filter_committed = self.filter_input.clone();
+        self.expand_ancestors_of_matches();
         self.rebuild_rows();
+    }
+
+    /// Expands every ancestor of a direct match so a freshly committed filter shows its matches.
+    fn expand_ancestors_of_matches(&mut self) {
+        if self.filter_committed.is_empty() {
+            return;
+        }
+        let direct = self.tree.filter_match_set(&self.filter_committed).direct;
+        let hop_limit = self.snapshot.procs.len();
+        for pid in direct {
+            let mut current = self.tree.parent_pid(pid);
+            let mut hops = 0;
+            while let Some(parent) = current {
+                self.expanded.insert(parent);
+                hops += 1;
+                if hops > hop_limit {
+                    break;
+                }
+                current = self.tree.parent_pid(parent);
+            }
+        }
     }
 
     /// Pre-sets the committed process filter (CLI `-f/--filter`).
     pub fn set_filter(&mut self, text: &str) {
         self.filter_input = text.to_owned();
         self.filter_committed = text.to_owned();
+        self.expand_ancestors_of_matches();
         self.rebuild_rows();
     }
 
@@ -1299,8 +1358,13 @@ mod tests {
         cycle_sort_key_value, next_tick_deadline, relocate_cursor_to_selected, App, AppMode,
         DisplayRow, GraphSymbolSetting, MAX_UPDATE_MS, MIN_UPDATE_MS,
     };
+    use crate::collect::{MemSet, ProcRec, Snapshot};
     use crate::model::{MemKind, SortBy};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crate::ui::app::UiSettings;
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use ratatui::layout::Rect;
     use std::ops::Range;
     use std::time::{Duration, Instant};
 
@@ -1430,5 +1494,176 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         assert_eq!(app.mode, AppMode::Normal);
         assert!(!app.should_quit);
+    }
+
+    fn synthetic_app(procs: &[(i32, i32, &str, u64)]) -> App {
+        let procs = procs
+            .iter()
+            .map(|&(pid, ppid, comm, rss)| ProcRec {
+                pid,
+                ppid,
+                comm: comm.to_owned(),
+                mem: MemSet {
+                    rss,
+                    vsz: rss,
+                    ..MemSet::default()
+                },
+            })
+            .collect();
+        let snapshot = Snapshot {
+            procs,
+            total_mem: 1_000_000,
+            used_mem: 500_000,
+            taken_at: Instant::now(),
+        };
+        App::with_snapshot(snapshot, UiSettings::default())
+    }
+
+    fn pids(app: &App) -> Vec<i32> {
+        app.rows().iter().map(|row| row.pid).collect()
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for ch in text.chars() {
+            press(app, KeyCode::Char(ch));
+        }
+    }
+
+    // 1 launchd -> 2 shell -> 3 target ; 1 -> 4 other ; 5 stray root
+    fn filter_app() -> App {
+        synthetic_app(&[
+            (1, 0, "launchd", 10),
+            (2, 1, "shell", 20),
+            (3, 2, "target", 30),
+            (4, 1, "other", 40),
+            (5, 0, "stray", 50),
+        ])
+    }
+
+    fn click(app: &mut App, column: u16, row: u16) {
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn committing_a_filter_expands_ancestors_of_matches() {
+        let mut app = filter_app();
+        app.expanded.clear(); // everything collapsed
+        press(&mut app, KeyCode::Char('f'));
+        type_text(&mut app, "TARGET");
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(pids(&app), vec![1, 2, 3]);
+        assert!(app.is_direct_filter_match(3));
+        assert!(app.is_context_filter_match(2));
+    }
+
+    #[test]
+    fn filtered_view_honours_collapse_and_toggle_keys() {
+        let mut app = filter_app();
+        app.set_filter("target");
+        assert_eq!(pids(&app), vec![1, 2, 3]);
+
+        // Select `shell` (row 1) and collapse it with ←: the match underneath disappears.
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.selected_pid, Some(2));
+        press(&mut app, KeyCode::Left);
+        assert_eq!(pids(&app), vec![1, 2]);
+
+        // Space/Enter and → re-expand while the filter is still active.
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(pids(&app), vec![1, 2, 3]);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(pids(&app), vec![1, 2]);
+        press(&mut app, KeyCode::Right);
+        assert_eq!(pids(&app), vec![1, 2, 3]);
+        assert!(app.is_filter_active());
+    }
+
+    #[test]
+    fn esc_in_filter_input_restores_the_committed_filter() {
+        let mut app = filter_app();
+        app.set_filter("other");
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.mode, AppMode::FilterInput);
+        type_text(&mut app, "xyz");
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.mode, AppMode::Normal);
+        assert_eq!(app.filter_indicator().as_deref(), Some("filter: other"));
+        assert_eq!(pids(&app), vec![1, 4]);
+
+        // `c` clears the filter from Normal mode.
+        press(&mut app, KeyCode::Char('c'));
+        assert!(!app.is_filter_active());
+        assert_eq!(pids(&app), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn esc_in_filter_input_without_a_committed_filter_stays_unfiltered() {
+        let mut app = filter_app();
+        press(&mut app, KeyCode::Char('/'));
+        type_text(&mut app, "zzz");
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.is_filter_active());
+        assert_eq!(pids(&app).len(), 5);
+    }
+
+    fn arm_table_hit_test(app: &mut App) {
+        app.set_table_hit_test(Rect::new(0, 1, 80, 10), 0, 0, vec![None; 10]);
+    }
+
+    #[test]
+    fn double_click_is_keyed_by_pid_not_row_index() {
+        let mut app = filter_app();
+        arm_table_hit_test(&mut app);
+        let before = pids(&app);
+        assert_eq!(before[0], 1);
+
+        // A click on pid 1 was recorded; a different row now sits at its old index.
+        app.last_click = Some((999, Instant::now()));
+        click(&mut app, 40, 1); // row 0 = launchd
+        assert!(app.expanded.contains(&1), "stale pid must not double-click");
+        assert_eq!(app.last_click.map(|(pid, _)| pid), Some(1));
+
+        // Second click on the same pid within the window toggles it.
+        click(&mut app, 40, 1);
+        assert!(!app.expanded.contains(&1));
+    }
+
+    #[test]
+    fn header_click_sorts_and_clicking_active_column_reverses() {
+        let mut app = filter_app();
+        app.set_header_hit_test(vec![
+            (Rect::new(0, 0, 20, 1), SortBy::Comm),
+            (Rect::new(21, 0, 6, 1), SortBy::Pid),
+            (Rect::new(28, 0, 10, 1), SortBy::Own),
+            (Rect::new(39, 0, 10, 1), SortBy::Aggregated),
+        ]);
+
+        click(&mut app, 22, 0);
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Pid, false));
+        click(&mut app, 22, 0);
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Pid, true));
+        click(&mut app, 30, 0);
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Own, true));
+        click(&mut app, 5, 0);
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Comm, false));
+        click(&mut app, 5, 0);
+        assert!(app.sort_desc);
+        // Roots now ordered by comm descending: stray, launchd.
+        assert_eq!(pids(&app)[0], 5);
+
+        // Clicks outside every header rect fall through to the table.
+        click(&mut app, 70, 0);
+        assert_eq!(app.sort_by, SortBy::Comm);
     }
 }

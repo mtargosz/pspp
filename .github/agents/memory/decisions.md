@@ -73,3 +73,15 @@ Per-agent models set in profile frontmatter:
 - **`%` column = row aggregated ÷ total RAM**, one decimal, deliberately not capped at 100 (a rollup of
   footprint can read 137%); JSON `pct` is the same value as a number; the TUI column caps display at 999.9%.
 - `collect::linux` compiles under `cfg(test)` on every platform so its parsers are unit-testable on macOS.
+
+## 2026-11-11 — M18
+
+- **Filtered view uses the real `expanded` set** (previously force-expanded). Committing a filter inserts
+  every ancestor of each direct match into `expanded`, so matches start visible but can be collapsed;
+  Space/Enter/←/→ work while filtered. Reverses the milestone-11 "filter ignores expanded" behaviour.
+- **Esc in filter input restores the committed filter** (btop); `c` in Normal mode clears. Reverses the
+  milestone-11/13 "Esc clears" decision.
+- **Header click sort**: COMM/PID/OWN/Σ/% headers are click targets; clicking the active key reverses,
+  a new key starts ascending for COMM/PID and descending for OWN/Σ (memory columns largest-first).
+  `%` sorts by the aggregated value. CHILDREN/METER are not sortable.
+- `App::with_snapshot` (pub(crate)) pulled forward from M22 so these behaviours test deterministically.

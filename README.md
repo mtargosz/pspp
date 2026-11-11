@@ -59,7 +59,7 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `Home/End, g/G` | Jump to first/last row. |
 | `q/Q, Ctrl-C, Ctrl-Q` | Quit `pspp` (`Ctrl-C`/`Ctrl-Q` from any mode). |
 | `f/F or /` | Start filter input. |
-| `c/C` | Clear committed filter. |
+| `c/C` | Clear the committed filter. |
 | `Esc` | Open main menu. |
 
 #### Tree
@@ -80,7 +80,8 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `S or r/R` | Reverse sort direction. |
 | `Filter input` | Type any characters (including spaces); matches `COMM` case-insensitively and keeps matching ancestors dimmed for context. |
 | `Backspace` | Delete one character in filter input. |
-| `Enter/Esc` | Commit filter / clear and exit filter input. |
+| `Enter` | Commit the filter and expand the ancestors of every match. |
+| `Esc` | Leave filter input and restore the previously committed filter (like btop). |
 
 #### Menu / Overlays
 
@@ -104,6 +105,7 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `Left click row` | Select row. |
 | `Left click [+]/[-]` | Expand/collapse node. |
 | `Double click row` | Expand/collapse node. |
+| `Click column header` | Sort by that column; click the active column again to reverse. |
 | `Menu click` | Click button to activate; click outside to close menu. |
 
 ### Options & Configuration (`pspp.conf`)

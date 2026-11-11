@@ -13,24 +13,34 @@ const NAVIGATION_KEYS: [(&str, &str); 7] = [
         "Quit pspp (Ctrl-C/Ctrl-Q from any mode).",
     ),
     ("f/F or /", "Start filter input."),
-    ("c/C", "Clear committed filter."),
+    ("c/C", "Clear the committed filter."),
     ("Esc", "Open main menu."),
 ];
 
 const TREE_KEYS: [(&str, &str); 3] = [
-    ("Space or Enter", "Toggle expand/collapse on selected node."),
+    (
+        "Space or Enter",
+        "Toggle expand/collapse on selected node (also while filtering).",
+    ),
     ("←", "Collapse selected node, or select parent."),
     ("→", "Expand selected node."),
 ];
 
-const DISPLAY_KEYS: [(&str, &str); 7] = [
+const DISPLAY_KEYS: [(&str, &str); 8] = [
     ("e/E", "Toggle aggregation mode: rollup/flat."),
     ("m/M", "Cycle memory type."),
     ("s", "Cycle sort key."),
     ("S or r/R", "Reverse sort direction."),
     ("Filter input", "Type any characters (including spaces)."),
     ("Backspace", "Delete one character in filter input."),
-    ("Enter/Esc", "Commit filter / clear and exit filter input."),
+    (
+        "Enter",
+        "Commit the filter and expand the ancestors of every match.",
+    ),
+    (
+        "Esc",
+        "Leave filter input and restore the previously committed filter.",
+    ),
 ];
 
 const MENU_KEYS: [(&str, &str); 9] = [
@@ -51,11 +61,15 @@ const MENU_KEYS: [(&str, &str); 9] = [
     ),
 ];
 
-const MOUSE_ACTIONS: [(&str, &str); 5] = [
+const MOUSE_ACTIONS: [(&str, &str); 6] = [
     ("Wheel up/down", "Scroll process rows."),
     ("Left click row", "Select row."),
     ("Left click [+]/[-]", "Expand/collapse node."),
     ("Double click row", "Expand/collapse node."),
+    (
+        "Click column header",
+        "Sort by that column; click the active column again to reverse.",
+    ),
     (
         "Menu click",
         "Click button to activate; click outside to close menu.",

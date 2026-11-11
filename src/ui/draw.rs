@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
 
+use crate::model::SortBy;
 use crate::query::{format_pct, format_size};
 use crate::ui::app::{App, AppMode, DisplayRow};
 use crate::ui::graph;
@@ -145,6 +146,13 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
 
     let (render_start, toggle_zones) = render_body(frame, body_area, &data_col_rects, app);
     app.set_table_hit_test(body_area, data_col_rects[0].x, render_start, toggle_zones);
+    app.set_header_hit_test(vec![
+        (data_col_rects[0], SortBy::Comm),
+        (data_col_rects[1], SortBy::Pid),
+        (data_col_rects[2], SortBy::Own),
+        (data_col_rects[3], SortBy::Aggregated),
+        (data_col_rects[4], SortBy::Aggregated),
+    ]);
     render_hint(frame, hint_area, app);
 }
 

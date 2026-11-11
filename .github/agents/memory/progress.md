@@ -24,7 +24,7 @@
 - [x] M15 fix(collect): correct ppid on macOS without root
 - [x] M16 feat(cli): deterministic query mode; TUI accepts --mem/--agg/--sort/--base10
 - [x] M17 feat(ui): honest memory graph, used/total status, % column
-- [ ] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
+- [x] M18 fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort
 - [ ] M19 feat(ui): mouse in Options/Help overlays; context-sensitive hint bar
 - [ ] M20 feat(options): btop General parity and global keys
 - [ ] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
@@ -287,19 +287,22 @@
   column-generic (also fixes width miscount of `Σ`). Help gained a "why totals can exceed RAM" section.
 - Linux target installed; `cargo check --target x86_64-unknown-linux-gnu` clean.
 
+### 2026-11-11 — M18 (fix(ui): filter honours tree state; btop-style Esc; pid-keyed double-click; header-click sort)
+- Filtered rows use `expanded`; commit/`set_filter` expands ancestors of direct matches.
+- Filter-input Esc restores the committed filter; help + README + man key tables updated.
+- `last_click` is `(pid, Instant)`; header hit rects stored in `App` (`set_header_hit_test`) and sorted on click.
+- `App::with_snapshot` introduced (needed for deterministic tests; M22 builds on it).
+- 6 new app tests (ancestor expansion, collapse/toggle while filtered, Esc restore, pid double-click, header sort).
+
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
 
 ## Review notes (deferred, 2026-11-11 reviewer)
 - `ProcTree::build` clones every `ProcRec` while `App` also keeps the snapshot (≈2× process memory per
   tick). Could borrow or move the snapshot into the tree.
-- Filter mode ignores the expanded set, so Space/Enter toggles state with no visible effect until the
-  filter is cleared.
-- Esc in filter input clears the filter (btop restores the previous one). Documented as intended.
 - Config save rewrites the file: user comments and unknown keys are dropped.
 - Menu is a simplified btop menu (no ASCII-art banner, no 80x24 minimum-size message).
 - No mouse handling in the Options/Help overlays.
-- Double-click detection is keyed by row index, which can shift if a tick lands between clicks.
 - `ProcTree::sorted_pids` (Comm arm case-sensitive) is only used by tests; `pub mod model` in
   `main.rs` keeps it from being flagged as dead. Consider removing or aligning with the UI sort.
 - Query mode would print duplicate rows if a snapshot ever contained duplicate pids (theoretical).
