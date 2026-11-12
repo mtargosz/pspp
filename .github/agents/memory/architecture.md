@@ -16,11 +16,14 @@ src/
                        Config saved on exit = only fields changed in the TUI (diff vs. initial settings)
   collect/
     mod.rs           — Snapshot API: { procs: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>, total_mem, used_mem };
-                       `take_snapshot(kind: MemKind)`
-                       MemSet { rss, vsz, footprint?, pss?, uss?, swap? } (bytes, Option per platform)
-    worker.rs        — `Collector`: worker thread + mpsc; `request(kind)` (one in flight), `try_take()`
-    macos.rs         — pid/ppid/p_comm from sysctl(KERN_PROC_ALL) (unprivileged) + sysinfo name/RSS/VSZ +
-                       proc_pid_rusage (ri_phys_footprint); graceful fallback
+                       `take_snapshot(kind: MemKind)` + `make_snapshot_source()`
+                       MemSet { rss, vsz, footprint, pss, uss, swap } (all `Option<u64>` bytes; `None` => `0 B~`)
+    worker.rs        — `Collector`: worker thread + mpsc; reuses collector state across requests; `request(kind)`
+                       (one in flight), `try_take()`
+    macos.rs         — `MacCollector` (reusable `System` for RAM + rich process names): enumerates
+                       `sysctl(KERN_PROC_ALL)` (unprivileged), reads RSS/VSZ via `proc_pidinfo(PROC_PIDTASKINFO)`
+                       (`None` on `EPERM`, exact `0` on `SZOMB`, drops mid-scan vanished PIDs), and calls
+                       `proc_pid_rusage` (`ri_phys_footprint`) lazily only when `kind == MemKind::Footprint`
     linux.rs         — /proc/<pid>/stat (pid/ppid/rss/vsz) + cmdline argv[0] name + smaps_rollup
                        (pss/uss/swap, only when the requested kind needs it); /proc/meminfo used/total;
                        permission/malformed-input fallback to RSS/VSZ-only records
@@ -28,8 +31,9 @@ src/
     mod.rs           — `MemKind` (as_str/Display/FromStr/ValueEnum, `available()` as a static slice,
                        `from_config`); model exports
     tree.rs          — `AggMode`/`SortBy` (as_str/Display/FromStr/ValueEnum/ALL); pid→ppid forest
-                       (orphans/self-links/cycles → synthetic root children), iterative rollup/flat
-                       aggregation, deterministic child ordering, visible flattening, sorted flattening
+                       (`pid <= 0`, `ppid <= 0`, orphans, self-links, and broken cycles → top-level roots),
+                       iterative rollup/flat aggregation, deterministic child ordering, visible flattening,
+                       sorted flattening
   query/
     mod.rs           — pure query logic (`QueryOpts`, `run_query`, size parse/format):
                        name/pid filtering, rollup|flat aggregation, threshold/sort/top,

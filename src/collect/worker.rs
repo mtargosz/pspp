@@ -19,7 +19,7 @@ pub struct Collector {
 impl Collector {
     /// Starts a worker that collects real snapshots.
     pub fn spawn() -> Self {
-        Self::spawn_with(collect::take_snapshot)
+        Self::spawn_with(collect::make_snapshot_source())
     }
 
     /// Starts a worker around an arbitrary snapshot source (used by tests).

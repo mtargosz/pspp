@@ -13,13 +13,12 @@ mod macos;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemSet {
-    pub rss: u64,
-    pub vsz: u64,
+    pub rss: Option<u64>,
+    pub vsz: Option<u64>,
     pub footprint: Option<u64>,
     pub pss: Option<u64>,
     pub uss: Option<u64>,
     pub swap: Option<u64>,
-    pub approximate: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,8 +78,8 @@ pub(crate) fn parse_linux_stat_line(line: &str, page_size: u64) -> Option<LinuxS
 }
 
 /// Takes one snapshot. `kind` is the memory metric the caller will display: expensive
-/// per-process reads (Linux `smaps_rollup`) only happen for the kinds that need them, and the
-/// remaining fields stay `None` without flagging the process as approximate.
+/// per-process reads (macOS `proc_pid_rusage`, Linux `smaps_rollup`) only happen for the kinds
+/// that need them, leaving unrequested fields as `None`.
 #[cfg(target_os = "macos")]
 pub fn take_snapshot(kind: MemKind) -> Snapshot {
     macos::take_snapshot(kind)
@@ -98,6 +97,19 @@ pub fn take_snapshot(_kind: MemKind) -> Snapshot {
         total_mem: 0,
         used_mem: 0,
     }
+}
+
+/// Builds a stateful snapshot source for the background worker so platform collectors can reuse
+/// cached process state across refresh ticks.
+#[cfg(target_os = "macos")]
+pub(crate) fn make_snapshot_source() -> impl FnMut(MemKind) -> Snapshot + Send + 'static {
+    let mut collector = macos::MacCollector::new();
+    move |kind| collector.take_snapshot(kind)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn make_snapshot_source() -> impl FnMut(MemKind) -> Snapshot + Send + 'static {
+    take_snapshot
 }
 
 #[cfg(test)]

@@ -32,7 +32,7 @@
 - [x] M23 refactor: single source of truth for enums; docs pass
 - [x] M24 fix(ui): clear overlays, center menu button labels, polish scrollbars and footers
 - [x] M25 fix(ui): fix ancestor tree connectors, meter styling, column widths, and responsive status/filter bar
-- [ ] M26 fix(collect): accurate macOS RSS/VSZ approximation, lazy rusage, and unified Option<u64> MemSet
+- [x] M26 fix(collect): accurate macOS RSS/VSZ approximation, lazy rusage, and unified Option<u64> MemSet
 - [ ] M27 fix(config,cli): persist save_on_exit=false, align sort direction, enrich JSON approx fields
 - [ ] M28 feat(ui): live filter-as-you-type, collapse/expand-all keys, force_tty fidelity, and event-loop coalescing
 - [ ] M29 docs(all): fix stale man page, option descriptions, CI path docs, and regenerate tables
@@ -378,6 +378,16 @@
 - Added priority-packed responsive status bar (`filter: <input>█` visible on 80-col screens), fixed `mem` box
   `meter_width == 0` spacing, added centered empty-table notices, switched width/truncation math to `unicode-width`
   with `…` truncation on `COMM`, and synced `README.md` screen block.
+
+### 2026-11-12 — coder & reviewer (M26)
+- Replaced `MemSet::{rss: u64, vsz: u64, approximate: bool}` with unified `Option<u64>` fields across all
+  metrics so unreadable counters uniformly yield `None` → `0 B~` and propagate `~` to ancestors.
+- Reworked `collect::macos` (`MacCollector` reused across worker requests via `make_snapshot_source()`):
+  enumerates `KERN_PROC_ALL`, reads `(rss, vsz)` via `proc_pidinfo(PROC_PIDTASKINFO)` (`None` on `EPERM`,
+  exact `0` on `SZOMB`, drops mid-scan vanished PIDs), and invokes `proc_pid_rusage` lazily only for `Footprint`.
+- Updated `ProcTree::build` so both `pid <= 0` and POSIX `ppid <= 0` resolve to top-level roots, keeping
+  macOS `kernel_task` (`pid = 0`) and `launchd` (`pid = 1, ppid = 0`) disjoint.
+- Added model, macOS (`EPERM`, lazy footprint, `SZOMB`/reaped probes, worker reuse), and Linux tests; all gates green.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.

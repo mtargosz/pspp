@@ -465,13 +465,12 @@ mod tests {
             ppid,
             comm: comm.to_owned(),
             mem: MemSet {
-                rss,
-                vsz: rss.saturating_mul(2),
+                rss: Some(rss),
+                vsz: Some(rss.saturating_mul(2)),
                 footprint: None,
                 pss: None,
                 uss: None,
                 swap: None,
-                approximate: false,
             },
         }
     }

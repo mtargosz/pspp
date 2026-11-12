@@ -167,7 +167,7 @@ impl ProcTree {
         let mut parents: HashMap<i32, Option<i32>> = HashMap::with_capacity(ordered_pids.len());
         for pid in &ordered_pids {
             let ppid = nodes.get(pid).map(|node| node.rec.ppid).unwrap_or_default();
-            let parent = if *pid == 0 || ppid == *pid || !pid_set.contains(&ppid) {
+            let parent = if *pid <= 0 || ppid <= 0 || ppid == *pid || !pid_set.contains(&ppid) {
                 None
             } else {
                 Some(ppid)
@@ -689,13 +689,12 @@ mod tests {
 
     fn mem(rss: u64) -> MemSet {
         MemSet {
-            rss,
-            vsz: rss,
+            rss: Some(rss),
+            vsz: Some(rss),
             footprint: None,
             pss: None,
             uss: None,
             swap: None,
-            approximate: false,
         }
     }
 
@@ -749,7 +748,9 @@ mod tests {
             proc(7, 6, "cycle-b", 7),
         ]));
 
-        assert_eq!(tree.root_children(), &[0, 4, 5, 6]);
+        assert_eq!(tree.root_children(), &[0, 1, 4, 5, 6]);
+        assert!(tree.child_pids(0).is_empty());
+        assert_eq!(tree.parent_pid(1), None);
         assert_eq!(
             tree.nodes
                 .get(&1)
@@ -771,6 +772,43 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5, 6, 7]
         );
+    }
+
+    #[test]
+    fn kernel_task_and_launchd_stay_independent_roots() {
+        let tree = ProcTree::build(snapshot(vec![
+            ProcRec {
+                pid: 0,
+                ppid: 0,
+                comm: "kernel_task".into(),
+                mem: MemSet::default(),
+            },
+            ProcRec {
+                pid: 1,
+                ppid: 0,
+                comm: "launchd".into(),
+                mem: MemSet::default(),
+            },
+            proc(100, 1, "user_child", 4096),
+            proc(-2, 1, "neg_pid", 128),
+            proc(200, -1, "neg_ppid", 256),
+        ]));
+
+        assert_eq!(tree.root_children(), &[-2, 0, 1, 200]);
+        assert_eq!(tree.parent_pid(0), None);
+        assert_eq!(tree.parent_pid(1), None);
+        assert_eq!(tree.parent_pid(-2), None);
+        assert_eq!(tree.parent_pid(200), None);
+        assert!(tree.child_pids(0).is_empty());
+        assert_eq!(tree.child_pids(1), &[100]);
+
+        let rollup = tree.rollup(MemKind::Rss);
+        assert_eq!(rollup[&0].own, 0);
+        assert!(rollup[&0].own_approximate);
+        assert_eq!(rollup[&0].aggregated, 0);
+        assert_eq!(rollup[&0].descendant_count, 0);
+        assert_eq!(rollup[&1].aggregated, 4096);
+        assert_eq!(rollup[&1].descendant_count, 1);
     }
 
     #[test]
@@ -798,6 +836,113 @@ mod tests {
             rollup.get(&1).map(|row| row.aggregated_approximate),
             Some(true)
         );
+    }
+
+    #[test]
+    fn missing_rss_and_vsz_mark_own_and_propagate_approximate_to_ancestors() {
+        let unreadable = MemSet {
+            rss: None,
+            vsz: None,
+            ..MemSet::default()
+        };
+        let exact = |rss, vsz| MemSet {
+            rss: Some(rss),
+            vsz: Some(vsz),
+            ..MemSet::default()
+        };
+
+        // Tree 1: unreadable root (like macOS launchd) -> readable parent -> unreadable leaf,
+        // plus an exact sibling branch.
+        // Tree 2: exact root -> exact middle -> unreadable leaf (pure ancestor propagation).
+        let tree = ProcTree::build(snapshot(vec![
+            ProcRec {
+                pid: 1,
+                ppid: 0,
+                comm: "launchd".into(),
+                mem: unreadable.clone(),
+            },
+            ProcRec {
+                pid: 2,
+                ppid: 1,
+                comm: "app".into(),
+                mem: exact(100, 200),
+            },
+            ProcRec {
+                pid: 3,
+                ppid: 2,
+                comm: "eperm_leaf".into(),
+                mem: unreadable.clone(),
+            },
+            ProcRec {
+                pid: 4,
+                ppid: 1,
+                comm: "clean_branch".into(),
+                mem: exact(50, 80),
+            },
+            ProcRec {
+                pid: 10,
+                ppid: 0,
+                comm: "exact_root".into(),
+                mem: exact(10, 20),
+            },
+            ProcRec {
+                pid: 11,
+                ppid: 10,
+                comm: "exact_mid".into(),
+                mem: exact(30, 40),
+            },
+            ProcRec {
+                pid: 12,
+                ppid: 11,
+                comm: "unreadable_gc".into(),
+                mem: unreadable,
+            },
+        ]));
+
+        for (kind, app_val, clean_val, root2_sum) in
+            [(MemKind::Rss, 100, 50, 40), (MemKind::Vsz, 200, 80, 60)]
+        {
+            let rollup = tree.rollup(kind);
+            assert_eq!(rollup[&1].own, 0);
+            assert!(rollup[&1].own_approximate, "{kind:?}: pid 1 own");
+            assert_eq!(rollup[&1].aggregated, app_val + clean_val);
+            assert!(rollup[&1].aggregated_approximate, "{kind:?}: pid 1 agg");
+
+            assert_eq!(rollup[&2].own, app_val);
+            assert!(!rollup[&2].own_approximate, "{kind:?}: pid 2 own");
+            assert_eq!(rollup[&2].aggregated, app_val);
+            assert!(rollup[&2].aggregated_approximate, "{kind:?}: pid 2 agg");
+
+            assert_eq!(rollup[&3].own, 0);
+            assert!(rollup[&3].own_approximate, "{kind:?}: pid 3 own");
+            assert!(rollup[&3].aggregated_approximate, "{kind:?}: pid 3 agg");
+
+            assert_eq!(rollup[&4].own, clean_val);
+            assert!(!rollup[&4].own_approximate, "{kind:?}: pid 4 own");
+            assert!(!rollup[&4].aggregated_approximate, "{kind:?}: pid 4 agg");
+
+            // Pure descendant propagation through multiple levels on an exact root.
+            assert!(!rollup[&10].own_approximate, "{kind:?}: pid 10 own");
+            assert_eq!(rollup[&10].aggregated, root2_sum);
+            assert!(rollup[&10].aggregated_approximate, "{kind:?}: pid 10 agg");
+            assert!(!rollup[&11].own_approximate, "{kind:?}: pid 11 own");
+            assert!(rollup[&11].aggregated_approximate, "{kind:?}: pid 11 agg");
+
+            // Flat mode: direct children only.
+            let flat = tree.flat(kind);
+            assert!(flat[&1].own_approximate, "{kind:?}: flat pid 1 own");
+            assert_eq!(flat[&1].aggregated, app_val + clean_val);
+            assert!(
+                !flat[&1].aggregated_approximate,
+                "{kind:?}: flat pid 1 direct children are exact"
+            );
+            assert!(!flat[&2].own_approximate);
+            assert_eq!(flat[&2].aggregated, 0);
+            assert!(
+                flat[&2].aggregated_approximate,
+                "{kind:?}: flat pid 2 direct child is unreadable"
+            );
+        }
     }
 
     #[test]

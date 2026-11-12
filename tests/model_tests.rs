@@ -30,8 +30,8 @@ fn load(name: &str) -> Snapshot {
             ppid: i32::try_from(int(p, "ppid")).expect("ppid fits i32"),
             comm: p["comm"].as_str().unwrap_or("?").to_owned(),
             mem: MemSet {
-                rss: u64::try_from(int(p, "rss")).expect("rss"),
-                vsz: u64::try_from(int(p, "vsz")).expect("vsz"),
+                rss: Some(u64::try_from(int(p, "rss")).expect("rss")),
+                vsz: Some(u64::try_from(int(p, "vsz")).expect("vsz")),
                 footprint: p["footprint"].as_u64(),
                 ..MemSet::default()
             },
@@ -54,7 +54,7 @@ const ALL: [&str; 6] = [
 ];
 
 fn rss_total(tree: &ProcTree) -> u64 {
-    tree.procs().map(|p| p.mem.rss).sum()
+    tree.procs().filter_map(|p| p.mem.rss).sum()
 }
 
 fn root_set(tree: &ProcTree) -> HashSet<i32> {
@@ -93,7 +93,7 @@ fn every_fixture_flat_sums_cover_each_non_root_exactly_once() {
         let non_root_own: u64 = tree
             .procs()
             .filter(|p| !roots.contains(&p.pid))
-            .map(|p| p.mem.rss)
+            .filter_map(|p| p.mem.rss)
             .sum();
         let flat_total: u64 = flat.values().map(|row| row.aggregated).sum();
         assert_eq!(
@@ -196,4 +196,33 @@ fn duplicate_pid_keeps_the_first_record() {
 fn fixtures_expose_system_memory_figures() {
     let tree = ProcTree::build(load("deep_chain"));
     assert_eq!((tree.total_mem(), tree.used_mem()), (1_000_000, 400_000));
+}
+
+#[test]
+fn unreadable_rss_and_vsz_propagate_approximate_across_deep_chain() {
+    let mut snap = load("deep_chain");
+    // Simulate EPERM on pid 4 (child of 3 -> 2 -> 1; parent of 5).
+    for proc_rec in &mut snap.procs {
+        if proc_rec.pid == 4 {
+            proc_rec.mem.rss = None;
+            proc_rec.mem.vsz = None;
+        }
+    }
+
+    let tree = ProcTree::build(snap);
+    for kind in [MemKind::Rss, MemKind::Vsz] {
+        let rollup = tree.rollup(kind);
+        assert!(rollup[&4].own_approximate);
+        assert_eq!(rollup[&4].own, 0);
+        // Ancestors 1, 2, 3 inherit `aggregated_approximate`, while leaf 5 stays exact.
+        for ancestor in [1, 2, 3, 4] {
+            assert!(
+                rollup[&ancestor].aggregated_approximate,
+                "{kind:?}: pid {ancestor} should be approximate"
+            );
+        }
+        assert!(!rollup[&1].own_approximate);
+        assert!(!rollup[&5].own_approximate);
+        assert!(!rollup[&5].aggregated_approximate);
+    }
 }

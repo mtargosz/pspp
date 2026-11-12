@@ -1306,13 +1306,21 @@ mod tests {
                     pid: 1,
                     ppid: 0,
                     comm: "init".into(),
-                    mem: MemSet::default(),
+                    mem: MemSet {
+                        rss: Some(0),
+                        vsz: Some(0),
+                        ..MemSet::default()
+                    },
                 },
                 ProcRec {
                     pid: 4_194_303,
                     ppid: 1,
                     comm: "worker".into(),
-                    mem: MemSet::default(),
+                    mem: MemSet {
+                        rss: Some(0),
+                        vsz: Some(0),
+                        ..MemSet::default()
+                    },
                 },
             ],
             total_mem: 1000,
@@ -1367,7 +1375,8 @@ mod tests {
                 ppid: pid - 1,
                 comm: format!("p{pid}"),
                 mem: MemSet {
-                    rss: 1000 * u64::try_from(pid).unwrap_or(1),
+                    rss: Some(1000 * u64::try_from(pid).unwrap_or(1)),
+                    vsz: Some(1000 * u64::try_from(pid).unwrap_or(1)),
                     ..MemSet::default()
                 },
             })
@@ -1479,7 +1488,8 @@ mod screens {
             ppid,
             comm: comm.into(),
             mem: MemSet {
-                rss: mib * MIB,
+                rss: Some(mib * MIB),
+                vsz: Some(mib * MIB),
                 footprint: known.then_some(mib * MIB),
                 ..MemSet::default()
             },
@@ -1842,7 +1852,8 @@ mod screens {
                     ppid: 0,
                     comm: "launchd".into(),
                     mem: MemSet {
-                        rss: 100 * MIB,
+                        rss: Some(100 * MIB),
+                        vsz: Some(100 * MIB),
                         footprint: Some(100 * MIB),
                         ..MemSet::default()
                     },
@@ -1852,7 +1863,8 @@ mod screens {
                     ppid: 1,
                     comm: "shell".into(),
                     mem: MemSet {
-                        rss: 200 * MIB,
+                        rss: Some(200 * MIB),
+                        vsz: Some(200 * MIB),
                         footprint: Some(200 * MIB),
                         ..MemSet::default()
                     },
@@ -1862,7 +1874,8 @@ mod screens {
                     ppid: 1,
                     comm: "daemon".into(),
                     mem: MemSet {
-                        rss: 500 * MIB,
+                        rss: Some(500 * MIB),
+                        vsz: Some(500 * MIB),
                         footprint: Some(500 * MIB),
                         ..MemSet::default()
                     },
@@ -1874,7 +1887,8 @@ mod screens {
                     ppid: 2,
                     comm: format!("worker-{idx:02}-background-service-process-name"),
                     mem: MemSet {
-                        rss: 80 * MIB,
+                        rss: Some(80 * MIB),
+                        vsz: Some(80 * MIB),
                         footprint: Some(80 * MIB),
                         ..MemSet::default()
                     },
@@ -2203,7 +2217,8 @@ mod screens {
             ppid,
             comm: comm.into(),
             mem: MemSet {
-                rss: mib * MIB,
+                rss: Some(mib * MIB),
+                vsz: Some(mib * MIB),
                 ..MemSet::default()
             },
         };
@@ -2335,9 +2350,9 @@ mod screens {
                     ppid: 0,
                     comm: "parent".into(),
                     mem: MemSet {
-                        rss: 1_048_000,
+                        rss: Some(1_048_000),
+                        vsz: Some(1_048_000),
                         footprint: Some(1_048_000),
-                        approximate: true,
                         ..MemSet::default()
                     },
                 },
@@ -2346,7 +2361,8 @@ mod screens {
                     ppid: 1,
                     comm: "child_unknown".into(),
                     mem: MemSet {
-                        rss: 0,
+                        rss: Some(0),
+                        vsz: Some(0),
                         footprint: None,
                         ..MemSet::default()
                     },
@@ -2380,7 +2396,8 @@ mod screens {
                     ppid: 0,
                     comm: "worker".into(),
                     mem: MemSet {
-                        rss: 1_048_000,
+                        rss: Some(1_048_000),
+                        vsz: Some(1_048_000),
                         ..MemSet::default()
                     },
                 }],
@@ -2572,7 +2589,8 @@ mod screens {
                         ppid: 0,
                         comm: "日本語プロセス".into(),
                         mem: MemSet {
-                            rss: 300 * MIB,
+                            rss: Some(300 * MIB),
+                            vsz: Some(300 * MIB),
                             ..MemSet::default()
                         },
                     },
@@ -2581,7 +2599,8 @@ mod screens {
                         ppid: 0,
                         comm: "非常に長い日本語のプロセス名テスト表示確認".into(),
                         mem: MemSet {
-                            rss: 200 * MIB,
+                            rss: Some(200 * MIB),
+                            vsz: Some(200 * MIB),
                             ..MemSet::default()
                         },
                     },
@@ -2590,7 +2609,8 @@ mod screens {
                         ppid: 0,
                         comm: "ascii_worker".into(),
                         mem: MemSet {
-                            rss: 100 * MIB,
+                            rss: Some(100 * MIB),
+                            vsz: Some(100 * MIB),
                             ..MemSet::default()
                         },
                     },

@@ -80,12 +80,6 @@ fn parse_cmdline_name(raw: &[u8]) -> Option<String> {
     (!name.is_empty()).then(|| name.to_owned())
 }
 
-/// A process is approximate only when a smaps-based metric was requested but its read failed
-/// or was incomplete; fields skipped on purpose (rss/vsz views) are plain `None`.
-fn smaps_approximate(wants_smaps: bool, rollup: Option<&SmapsRollup>) -> bool {
-    wants_smaps && rollup.is_none_or(|r| r.pss.is_none() || r.uss.is_none() || r.swap.is_none())
-}
-
 /// Whether the selected metric needs the (expensive) `smaps_rollup` read.
 fn needs_smaps(kind: MemKind) -> bool {
     matches!(kind, MemKind::Pss | MemKind::Uss | MemKind::Swap)
@@ -153,8 +147,7 @@ pub(crate) fn take_snapshot(kind: MemKind) -> Snapshot {
                 None => continue,
             };
 
-            let wants_smaps = needs_smaps(kind);
-            let rollup = if wants_smaps {
+            let rollup = if needs_smaps(kind) {
                 fs::read_to_string(proc_dir.join("smaps_rollup"))
                     .ok()
                     .map(|content| parse_smaps_rollup(&content))
@@ -166,10 +159,6 @@ pub(crate) fn take_snapshot(kind: MemKind) -> Snapshot {
             let uss = rollup.as_ref().and_then(|value| value.uss);
             let swap = rollup.as_ref().and_then(|value| value.swap);
 
-            // Fields that were deliberately not read are not "approximate"; only a failed or
-            // partial smaps read for a smaps-based metric is.
-            let approximate = smaps_approximate(wants_smaps, rollup.as_ref());
-
             let comm = fs::read(proc_dir.join("cmdline"))
                 .ok()
                 .and_then(|raw| parse_cmdline_name(&raw))
@@ -180,13 +169,12 @@ pub(crate) fn take_snapshot(kind: MemKind) -> Snapshot {
                 ppid: stat.ppid,
                 comm,
                 mem: MemSet {
-                    rss: stat.rss,
-                    vsz: stat.vsz,
+                    rss: Some(stat.rss),
+                    vsz: Some(stat.vsz),
                     footprint: None,
                     pss,
                     uss,
                     swap,
-                    approximate,
                 },
             });
         }
@@ -276,13 +264,57 @@ SwapPss:              25 kB
     }
 
     #[test]
-    fn skipped_smaps_is_not_approximate_but_failed_or_partial_reads_are() {
-        let full = parse_smaps_rollup(SMAPS);
-        assert!(!smaps_approximate(false, None), "rss/vsz views never flag");
-        assert!(!smaps_approximate(true, Some(&full)));
-        assert!(smaps_approximate(true, None), "unreadable smaps_rollup");
+    fn skipped_smaps_is_not_approximate_for_rss_vsz_but_missing_smaps_fields_are() {
+        use crate::model::ProcTree;
+
+        let build_mem = |rollup: Option<SmapsRollup>| MemSet {
+            rss: Some(4096),
+            vsz: Some(8192),
+            footprint: None,
+            pss: rollup.as_ref().and_then(|r| r.pss),
+            uss: rollup.as_ref().and_then(|r| r.uss),
+            swap: rollup.as_ref().and_then(|r| r.swap),
+        };
+        let check_own_approx = |mem: MemSet, kind: MemKind| -> bool {
+            let tree = ProcTree::build(Snapshot {
+                procs: vec![ProcRec {
+                    pid: 1,
+                    ppid: 0,
+                    comm: "t".into(),
+                    mem,
+                }],
+                total_mem: 0,
+                used_mem: 0,
+            });
+            tree.rollup(kind)[&1].own_approximate
+        };
+
+        // RSS/VSZ skip smaps_rollup (`None`), yet RSS and VSZ remain exact (`Some(...)`).
+        assert!(!check_own_approx(build_mem(None), MemKind::Rss));
+        assert!(!check_own_approx(build_mem(None), MemKind::Vsz));
+
+        // Full smaps_rollup satisfies Pss, Uss, and Swap without approximation.
+        assert!(!check_own_approx(
+            build_mem(Some(parse_smaps_rollup(SMAPS))),
+            MemKind::Pss
+        ));
+        assert!(!check_own_approx(
+            build_mem(Some(parse_smaps_rollup(SMAPS))),
+            MemKind::Uss
+        ));
+        assert!(!check_own_approx(
+            build_mem(Some(parse_smaps_rollup(SMAPS))),
+            MemKind::Swap
+        ));
+
+        // Unreadable or partial smaps_rollup marks only the missing smaps metrics approximate.
+        assert!(check_own_approx(build_mem(None), MemKind::Pss));
         let partial = parse_smaps_rollup("Pss: 1 kB\n");
-        assert!(smaps_approximate(true, Some(&partial)));
+        assert!(!check_own_approx(
+            build_mem(Some(SmapsRollup { ..partial })),
+            MemKind::Pss
+        ));
+        assert!(check_own_approx(build_mem(Some(partial)), MemKind::Uss));
     }
 
     #[test]

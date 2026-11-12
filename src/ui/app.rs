@@ -1888,8 +1888,8 @@ mod tests {
                 ppid,
                 comm: comm.to_owned(),
                 mem: MemSet {
-                    rss,
-                    vsz: rss,
+                    rss: Some(rss),
+                    vsz: Some(rss),
                     ..MemSet::default()
                 },
             })
@@ -2469,7 +2469,11 @@ mod tests {
                     pid,
                     ppid: 0,
                     comm: format!("p{pid}"),
-                    mem: MemSet::default(),
+                    mem: MemSet {
+                        rss: Some(0),
+                        vsz: Some(0),
+                        ..MemSet::default()
+                    },
                 })
                 .collect(),
             total_mem: 100,
@@ -2557,7 +2561,11 @@ mod tests {
             pid: 6,
             ppid: 5,
             comm: "newbie".into(),
-            mem: MemSet::default(),
+            mem: MemSet {
+                rss: Some(0),
+                vsz: Some(0),
+                ..MemSet::default()
+            },
         });
         app.apply_snapshot(next);
 

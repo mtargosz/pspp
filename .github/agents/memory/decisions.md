@@ -203,3 +203,16 @@ Per-agent models set in profile frontmatter:
   is never clipped off-screen on 80-column terminals.
 - **Unicode display width**: Terminal column layout (`draw`, `help`, `query`) measures cell width via
   `unicode-width` (`UnicodeWidthStr`/`UnicodeWidthChar`) and truncates overflowing `COMM` cells with `…`.
+
+## 2026-11-12 — M26 (unified `Option<u64>` `MemSet`, macOS `PROC_PIDTASKINFO` & lazy `rusage`)
+
+- **All `MemSet` fields are `Option<u64>`; `MemSet::approximate` removed** (refines 2026-11-11 & M21):
+  Every `MemKind` (`rss`, `vsz`, `footprint`, `pss`, `uss`, `swap`) signals unreadability uniformly via
+  `None` → `(0, approximate = true)` (`0 B~`).
+- **macOS collector enumerates `KERN_PROC_ALL` + `PROC_PIDTASKINFO` + lazy `proc_pid_rusage`**:
+  - `MacCollector` reuses `sysinfo::System` on the worker thread for system RAM and rich process names,
+    reads RSS/VSZ via `libc::proc_pidinfo(PROC_PIDTASKINFO)` (`None` on `EPERM` instead of `sysinfo`'s
+    lossy `0`), skips `proc_pid_rusage` unless `kind == MemKind::Footprint`, drops mid-scan reaped PIDs
+    (`ESRCH` + `kill(pid, 0)` `ESRCH`), and reports exact `0` for unreaped `SZOMB` zombies.
+  - `ProcTree::build` treats both `pid <= 0` and POSIX `ppid <= 0` as top-level roots (`parent = None`),
+    keeping `kernel_task` (`pid = 0`) and `launchd` (`pid = 1, ppid = 0`) as separate roots.

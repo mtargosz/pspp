@@ -26,8 +26,8 @@ pub enum MemKind {
 impl MemKind {
     pub fn get(&self, mem: &MemSet) -> Option<u64> {
         match self {
-            MemKind::Rss => Some(mem.rss),
-            MemKind::Vsz => Some(mem.vsz),
+            MemKind::Rss => mem.rss,
+            MemKind::Vsz => mem.vsz,
             MemKind::Footprint => mem.footprint,
             MemKind::Pss => mem.pss,
             MemKind::Uss => mem.uss,
@@ -134,13 +134,12 @@ mod tests {
     #[test]
     fn mem_kind_get_reads_fields() {
         let mem = MemSet {
-            rss: 1,
-            vsz: 2,
+            rss: Some(1),
+            vsz: Some(2),
             footprint: Some(3),
             pss: Some(4),
             uss: Some(5),
             swap: Some(6),
-            approximate: false,
         };
 
         assert_eq!(MemKind::Rss.get(&mem), Some(1));
@@ -149,6 +148,11 @@ mod tests {
         assert_eq!(MemKind::Pss.get(&mem), Some(4));
         assert_eq!(MemKind::Uss.get(&mem), Some(5));
         assert_eq!(MemKind::Swap.get(&mem), Some(6));
+
+        let empty = MemSet::default();
+        for kind in MemKind::ALL {
+            assert_eq!(kind.get(&empty), None);
+        }
     }
 
     #[test]
