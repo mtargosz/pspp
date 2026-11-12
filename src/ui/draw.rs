@@ -2154,6 +2154,14 @@ mod screens {
         );
         assert_eq!(desc_joined, OptionKey::UpdateMs.description());
 
+        for &key in App::option_keys() {
+            let wrapped = crate::ui::help::wrap_text(key.description(), usize::from(inner.width));
+            assert!(
+                wrapped.len() <= 2,
+                "{key:?} description exceeds 2 rows on 80x24: {wrapped:?}"
+            );
+        }
+
         let selected_bg = app.theme.color(app.theme.selected_bg);
         for y in desc_rect.y..desc_rect.y + desc_rect.height {
             for x in desc_rect.x..desc_rect.x + desc_rect.width {

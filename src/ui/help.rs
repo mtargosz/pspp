@@ -76,8 +76,14 @@ const MENU_KEYS: [(&str, &str); 10] = [
         "Options: ← / →, h / l",
         "Change/toggle selected option (h/l need vim_keys).",
     ),
-    ("Options: Enter", "Edit update_ms or advance value."),
-    ("Options: Esc/q/Q", "Close options and return to menu."),
+    (
+        "Options: Enter",
+        "Edit update_ms/clock_format or advance value.",
+    ),
+    (
+        "Options: Esc/q/Q",
+        "Close options and return to previous view.",
+    ),
     (
         "update_ms / clock_format editor",
         "Type to edit; Backspace deletes; Enter commits; Esc cancels.",
@@ -131,32 +137,36 @@ pub fn memory_help_text(kind: MemKind) -> &'static str {
         MemKind::Rss => {
             "RSS is RAM the process is using right now, including shared memory also used by \
              others. Available on macOS and Linux. Good quick signal, but shared pages can make \
-             per-process usage look larger than what is uniquely owned."
+             per-process usage look larger than what is uniquely owned. When per-process task \
+             info is unreadable without root (e.g. other users' or system processes on macOS), \
+             it is shown as 0 B~ and marks ancestor totals approximate (~)."
         }
         MemKind::Vsz => {
             "VSZ is all address space the process has reserved. Most of it is not real RAM, so \
              it often looks scary but is mostly harmless. Available on macOS and Linux. Treat it \
-             as a rough reservation indicator, not true RAM pressure."
+             as a rough reservation indicator, not true RAM pressure. When per-process task info \
+             is unreadable without root (e.g. other users' or system processes on macOS), it is \
+             shown as 0 B~ and marks ancestor totals approximate (~)."
         }
         MemKind::Footprint => {
             "Footprint is Apple’s own \"how heavy is this process\" memory number (like Activity \
-             Monitor’s Memory column). Available on macOS, unavailable on Linux. If unavailable, \
-             pspp marks values approximate (~)."
+             Monitor’s Memory column). Available on macOS, unavailable on Linux. When unreadable \
+             without root, it is shown as 0 B~ and marks ancestor totals approximate (~)."
         }
         MemKind::Pss => {
             "PSS splits shared pages fairly between sharing processes, making it the best answer \
              to \"who is really using RAM?\" Available on Linux via smaps_rollup, unavailable on \
-             macOS. Missing permissions/data are shown as approximate (~)."
+             macOS. Unreadable processes show 0 B~ and mark ancestor totals approximate (~)."
         }
         MemKind::Uss => {
             "USS is memory only this process uses — what you usually get back if you kill it. \
-             Available on Linux via smaps_rollup, unavailable on macOS. Missing permissions/data \
-             are shown as approximate (~)."
+             Available on Linux via smaps_rollup, unavailable on macOS. Unreadable processes \
+             show 0 B~ and mark ancestor totals approximate (~)."
         }
         MemKind::Swap => {
             "Swap is memory moved out of RAM onto disk because RAM was full. Available on Linux \
-             via smaps_rollup, unavailable on macOS. Missing permissions/data are shown as \
-             approximate (~)."
+             via smaps_rollup, unavailable on macOS. Unreadable processes show 0 B~ and mark \
+             ancestor totals approximate (~)."
         }
     }
 }

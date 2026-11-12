@@ -1,6 +1,6 @@
 # pspp — Progress board (living document)
 
-## Project status: IN PROGRESS (second review follow-up milestones M24–M29 in `prompts/pspp_review_2_prompt.md`)
+## Project status: COMPLETE (second review follow-up milestones M24–M29 completed)
 
 ## Status key: [ ] pending · [~] in progress · [x] done · [!] blocked
 
@@ -35,7 +35,7 @@
 - [x] M26 fix(collect): accurate macOS RSS/VSZ approximation, lazy rusage, and unified Option<u64> MemSet
 - [x] M27 fix(config,cli): persist save_on_exit=false, align sort direction, enrich JSON approx fields
 - [x] M28 feat(ui): live filter-as-you-type, collapse/expand-all keys, force_tty fidelity, and event-loop coalescing
-- [ ] M29 docs(all): fix stale man page, option descriptions, CI path docs, and regenerate tables
+- [x] M29 docs(all): fix stale man page, option descriptions, CI path docs, and regenerate tables
 
 ## Log
 
@@ -412,12 +412,22 @@
 - Added `Options` `h`/`l` (`vim_keys`), `Help` `Home`/`End`/`g`/`G`, `Menu` wheel scrolling, and `DateTime<Tz>`
   timezone formatting (`%+`/`%z`/`%Z`) in `src/ui/clock.rs`; regenerated `README.md` and `doc/pspp.1` blocks.
 
+### 2026-11-12 — documentator & reviewer (M29)
+- Removed the obsolete macOS `proc_pidinfo` root-orphan claim from `doc/pspp.1` and documented `sysctl(KERN_PROC_ALL)`
+  hierarchy preservation alongside `0 B~`/`~` approximate markers on unreadable `rss`/`vsz`/`footprint` counters.
+- Updated `OptionKey::description` strings (`MemKind`, `ForceTty`, etc.) in `src/ui/app.rs` and `Options: Esc/q/Q`
+  (`returns to previous view`) + `memory_help_text` in `src/ui/help.rs`.
+- Documented `-r, --reverse`, natural `--sort` direction, `PATTERN` vs `-f/--filter` conflict, JSON `own_approximate`
+  and `total_approximate`, `save_on_exit = false` persistence, `force_tty`, and `NO_COLOR` across `README.md` and `doc/pspp.1`.
+- Updated CI workflow path references in `README.md` and `architecture.md` to `.github/_workflows/ci.yml` and
+  removed stale deferred `sorted_pids` note from `progress.md`.
+- Regenerated synchronized blocks via `PSPP_UPDATE_DOCS=1 cargo test --lib` and verified `mandoc -Tlint doc/pspp.1`
+  plus all build/test/clippy/fmt/doc/linux-target gates clean.
+
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
 
 ## Review notes (deferred, 2026-11-11 reviewer)
 - Config save rewrites the file: user comments and unknown keys are dropped.
 - Menu is a simplified btop menu (no ASCII-art banner, no 80x24 minimum-size message).
-- `ProcTree::sorted_pids` (Comm arm case-sensitive) is only used by tests; `pub mod model` in
-  `main.rs` keeps it from being flagged as dead. Consider removing or aligning with the UI sort.
 - Query mode would print duplicate rows if a snapshot ever contained duplicate pids (theoretical).

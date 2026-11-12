@@ -38,7 +38,7 @@ src/
   query/
     mod.rs           — pure query logic (`QueryOpts`, `run_query`, size parse/format):
                        name/pid filtering, rollup|flat aggregation, threshold/sort/top,
-                       plain aligned table + JSON output wrapper { mem, agg, rows, total }
+                       plain aligned table + JSON output wrapper { mem, agg, rows, total, total_approximate }
   ui/
     mod.rs           — `run_tui`: terminal lifecycle guard (alt screen/raw/mouse/cursor),
                        panic hook restoration, coalesced zero-timeout event batching (up to 64/frame),
@@ -71,9 +71,9 @@ tests/
   model_tests.rs     — integration tests: loads fixtures into `Snapshot`s and checks rollup/flat totals,
                        root sets, cycle/duplicate handling through the public `pspp::model` API
   query_cli.rs       — runs the real binary: stdout/JSON shape, header mode, config isolation, exit codes
-.github/workflows/
+.github/_workflows/
   ci.yml             — macos-latest + ubuntu-latest: build, test, clippy -D warnings, fmt --check, doc
-                       (RUSTFLAGS/RUSTDOCFLAGS = -D warnings)
+                       (RUSTFLAGS/RUSTDOCFLAGS = -D warnings; underscored to stay disabled on GitHub)
 ```
 
 Unit tests live next to the code (`#[cfg(test)]`). The UI is tested without a terminal:

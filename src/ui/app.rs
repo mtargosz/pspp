@@ -197,12 +197,18 @@ impl OptionKey {
             Self::UpdateMs => {
                 "Refresh interval in milliseconds (minimum 100). Enter edits, ←/→ adjusts by 100."
             }
-            Self::MemKind => "Memory field used by table and graph (platform-dependent kinds).",
-            Self::AggMode => "rollup sums descendants; flat sums direct children only.",
-            Self::GraphSymbol => "Graph glyph style: auto, braille, block, or tty.",
-            Self::Base10 => "Size units: false = KiB/MiB (1024), true = KB/MB (1000).",
-            Self::SaveOnExit => "Persist current options to pspp.conf when leaving TUI.",
-            Self::SortKey => "Primary sort key inside each tree sibling group.",
+            Self::MemKind => {
+                "Memory metric for the process table and Σ summary (the used graph always plots system RAM in use)."
+            }
+            Self::AggMode => "rollup sums self and all descendants; flat sums direct children only.",
+            Self::GraphSymbol => {
+                "Graph glyph style: auto, braille, block, or tty (overridden by force_tty and NO_COLOR)."
+            }
+            Self::Base10 => "Size units: false = KiB/MiB/GiB (1024), true = KB/MB/GB (1000).",
+            Self::SaveOnExit => {
+                "Save TUI option changes to pspp.conf on exit (turning off saves save_on_exit = false)."
+            }
+            Self::SortKey => "Primary sort key inside each tree sibling group (agg, own, pid, or comm).",
             Self::SortReverse => "Sort direction: true = descending, false = ascending.",
             Self::ColorTheme => {
                 "Theme: Default or a btop .theme file from <config dir>/themes (←/→ cycles)."
@@ -211,20 +217,24 @@ impl OptionKey {
                 "Paint the theme's background colour (off keeps the terminal's)."
             }
             Self::Truecolor => {
-                "24-bit colour: auto follows COLORTERM; off uses the 256-colour palette."
+                "24-bit colour: auto follows COLORTERM; on forces RGB; off uses the 256-colour palette."
             }
-            Self::RoundedCorners => "Rounded (╭╮╰╯) or square box corners.",
+            Self::RoundedCorners => {
+                "Rounded (╭╮╰╯) or square (┌┐└┘) box corners (overridden by force_tty and NO_COLOR)."
+            }
             Self::VimKeys => {
-                "j/k/l/g/G navigate like vim. Off makes them inert (h always opens Help)."
+                "j/k/l/g/G navigate like vim (plus h/l in Options). Off makes them inert; h opens Help in the table."
             }
             Self::DisableMouse => "Stop capturing the mouse so the terminal's own selection works.",
             Self::ClockFormat => {
-                "strftime text shown in the top border, e.g. %H:%M:%S. Empty hides the clock."
+                "strftime clock in the top border, e.g. %H:%M:%S (Enter edits; empty hides the clock)."
             }
             Self::BackgroundUpdate => {
                 "Keep refreshing while Menu/Options/Help is open (off pauses)."
             }
-            Self::ForceTty => "Force the tty graph glyphs even when the terminal supports braille.",
+            Self::ForceTty => {
+                "Force 16-colour TTY mode: ASCII #/- meters, tty graph glyphs, square borders (overrides graph_symbol and rounded_corners)."
+            }
         }
     }
 }

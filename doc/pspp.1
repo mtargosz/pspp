@@ -1,8 +1,18 @@
-.TH PSPP 1 "2026-11-11" "pspp 0.1.0" "User Commands"
+.TH PSPP 1 "2026-11-12" "pspp 0.1.0" "User Commands"
 .SH NAME
 pspp \- interactive and scriptable process memory viewer grouped by parent
 .SH SYNOPSIS
 .B pspp
+.RB [ \-\-mem
+.IR KIND ]
+.RB [ \-\-agg
+.IR MODE ]
+.RB [ \-\-sort
+.IR FIELD ]
+.RB [ \-r | \-\-reverse ]
+.RB [ \-f
+.IR TEXT ]
+.RB [ \-\-base10 ]
 .RB [ \-\-update\-ms
 .IR MS ]
 .br
@@ -51,6 +61,7 @@ and the JSON output name the mode in effect.
 .BR \-\-mem ,
 .BR \-\-agg ,
 .BR \-\-sort ,
+.BR \-r / \-\-reverse ,
 .B \-\-base10
 and
 .B \-\-update\-ms
@@ -59,7 +70,11 @@ In the TUI they override
 .I pspp.conf
 for that run only and are never saved; with
 .B save_on_exit
-only settings changed inside the TUI are written.
+enabled, only settings changed inside the TUI are written (and turning
+.B save_on_exit
+off in Options persists
+.B "save_on_exit = false"
+without saving other transient session changes).
 .SS Aggregation Modes
 .TP
 .B rollup
@@ -118,19 +133,52 @@ Swapped-out bytes reported by
 .PP
 When per-process privileged metrics are unreadable without elevated permissions,
 .B pspp
-keeps the process in the snapshot and appends a trailing tilde
+keeps the process in the snapshot, reports its own value as
+.B "0 B~"
+and appends a trailing tilde
 .RB ( ~ )
-to indicate that a value or aggregated sum is approximate.
-On macOS without root privileges, processes owned by other users have
-unreadable parent info via
-.B proc_pidinfo
-and appear as top-level roots.
+to any ancestor sum that includes it.
+On macOS,
+.B sysctl(KERN_PROC_ALL)
+preserves the full
+.I "pid <- ppid"
+hierarchy without root privileges, while unreadable per-process memory counters
+.RB ( rss ,
+.BR vsz ,
+and
+.B footprint
+on other users' or system processes) report
+.B "0 B~"
+and mark ancestor sums approximate
+.RB ( ~ )
+unless run with
+.BR sudo (8).
+On Linux,
+.B rss
+and
+.B vsz
+are read from
+.IR /proc/<pid>/stat ,
+while unreadable
+.I /proc/<pid>/smaps_rollup
+counters
+.RB ( pss ,
+.BR uss ,
+.BR swap )
+likewise report
+.B "0 B~"
+and mark ancestor sums approximate
+.RB ( ~ ).
 .SH OPTIONS
 .TP
 .I PATTERN
 Case-insensitive substring filter matched against process command names
 .RB ( COMM ).
 Triggers non-interactive query mode.
+Cannot be combined with
+.BR \-f / \-\-filter
+(passing both is a usage error and exits with status
+.BR 2 ).
 Regex-style
 .B !
 prefixes are not currently supported.
@@ -177,17 +225,37 @@ Accepts byte integers or binary unit suffixes (case-insensitive):
 Triggers query mode.
 .TP
 .BI \-\-sort " FIELD"
-Sort query rows by
+Sort rows by
 .B agg
-(aggregated memory, descending),
+(aggregated memory; default descending),
 .B own
-(own memory, descending),
+(own memory; default descending),
 .B pid
-(ascending), or
+(default ascending), or
 .B comm
-(case-insensitive ascending).
+(case-insensitive; default ascending).
 Ties break by ascending PID.
-Applies to both TUI and query mode.
+Applies to both TUI and query mode (in the TUI, overrides
+.B sort_key
+and uses its natural default direction unless
+.BR \-r / \-\-reverse
+is also passed).
+.TP
+.BR \-r ", " \-\-reverse
+Invert the sort direction in both TUI and query mode: reverses the natural
+direction of
+.B \-\-sort
+.RB ( agg / own
+ascending;
+.BR pid / comm
+descending), or inverts
+.B sort_reverse
+from
+.I pspp.conf
+when
+.B \-\-sort
+is omitted in the TUI.
+Does not force query mode on its own.
 .TP
 .BI \-\-top " N"
 Show at most
@@ -199,10 +267,23 @@ Triggers query mode.
 .TP
 .B \-\-json
 Format query output as pretty-printed JSON
-.RB ( "{ ""mem"": ""rss"", ""agg"": ""rollup"", ""rows"": [...], ""total"": <bytes> }" )
-with raw integer byte values; each row also carries
+.RB ( "{ ""mem"": ""rss"", ""agg"": ""rollup"", ""rows"": [...], ""total"": <bytes>, ""total_approximate"": <bool> }" )
+with raw integer byte values.
+Each element of
+.B rows
+contains
+.BR pid ,
+.BR ppid ,
+.BR comm ,
+.BR own ,
+.BR own_approximate ,
+.BR agg ,
 .B pct
-(aggregated memory as a percentage of total RAM, one decimal).
+(aggregated memory as a percentage of total RAM, one decimal),
+.BR children ,
+.BR descendants ,
+and
+.BR approximate .
 Triggers query mode.
 .TP
 .B \-\-query
@@ -213,7 +294,12 @@ Pre-set the TUI process filter (like
 .BR "btop \-f" ).
 In query mode it is used as
 .I PATTERN
-when none is given.
+when none is given; passing both
+.I PATTERN
+and
+.BR \-f / \-\-filter
+is a usage error (exit
+.BR 2 ).
 .TP
 .B \-\-base10
 Format human-readable sizes using decimal powers of 1000
@@ -345,10 +431,10 @@ Select option row.
 Change/toggle selected option (h/l need vim_keys).
 .TP
 .B Options: Enter
-Edit update_ms or advance value.
+Edit update_ms/clock_format or advance value.
 .TP
 .B Options: Esc/q/Q
-Close options and return to menu.
+Close options and return to previous view.
 .TP
 .B update_ms / clock_format editor
 Type to edit; Backspace deletes; Enter commits; Esc cancels.
@@ -405,17 +491,74 @@ Query matched zero rows (plain mode also prints
 to standard error;
 .B \-\-json
 prints
-.BR "{""mem"":""rss"",""agg"":""rollup"",""rows"":[],""total"":0}" ).
+.BR "{""mem"":""rss"",""agg"":""rollup"",""rows"":[],""total"":0,""total_approximate"":false}" ).
 In TUI mode, terminal initialization/runtime failure returns 1.
 .TP
 .B 2
-Command-line usage error (invalid option, unknown/unavailable
+Command-line usage error (invalid option, conflicting
+.I PATTERN
+and
+.BR \-f / \-\-filter ,
+unknown/unavailable
 .BR \-\-mem ,
 bad
 .B \-\-min
 size, or
 .BR "\-\-top 0" )
 or standard output write error.
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+When set to a non-empty value, disables ANSI colours in the TUI, selects
+.B tty
+graph glyphs, renders ASCII
+.BR # / \-
+usage meters and square box borders, and uses reverse-video selection
+highlights without modifying
+.IR pspp.conf .
+.TP
+.B COLORTERM
+Consulted when
+.B truecolor
+is
+.BR auto :
+.B truecolor
+or
+.B 24bit
+enables 24-bit RGB gradients; otherwise
+.B pspp
+falls back to the 256-colour palette.
+.TP
+.B TERM
+Consulted when
+.B graph_symbol
+is
+.B auto
+(selects
+.B tty
+glyphs for
+.BR linux ,
+.BR dumb ,
+or a
+.B TERM
+without
+.B color
+when
+.B COLORTERM
+is unset).
+.TP
+.B PSPP_CONFIG_DIR
+When set and non-empty, overrides the directory used for
+.I pspp.conf
+and
+.IR themes/ .
+.TP
+.B XDG_CONFIG_HOME
+Used on Linux to locate
+.I $XDG_CONFIG_HOME/pspp/pspp.conf
+when
+.B PSPP_CONFIG_DIR
+is unset.
 .SH FILES
 .TP
 .I $PSPP_CONFIG_DIR/pspp.conf
@@ -450,6 +593,19 @@ Supported TOML keys:
 and
 .BR force_tty .
 All are editable live in the Options overlay.
+Enabling
+.B force_tty
+forces 16-colour ANSI TTY mode: ASCII
+.BR # / \-
+meters,
+.B tty
+graph glyphs, and square borders, overriding
+.BR graph_symbol ,
+.BR rounded_corners ,
+.BR truecolor ,
+and custom
+.I .theme
+files.
 .TP
 .I $PSPP_CONFIG_DIR/themes/NAME.theme
 btop-format theme files selectable through
@@ -479,7 +635,11 @@ When
 is
 .B true
 (default), TUI option changes are saved atomically via a temporary sibling file
-on exit.
+on exit; toggling
+.B save_on_exit
+off in Options writes
+.B "save_on_exit = false"
+without saving other transient session edits.
 .SH EXAMPLES
 Launch the interactive TUI with default settings:
 .PP
@@ -513,12 +673,21 @@ pspp \-\-mem footprint \-\-agg flat \-\-top 10
 .fi
 .RE
 .PP
+Sort query output alphabetically by command name in reverse
+.RI ( "Z -> A" ):
+.PP
+.RS 4
+.nf
+pspp \-\-query \-\-sort comm \-r \-\-top 10
+.fi
+.RE
+.PP
 Emit JSON for a specific PID subtree and extract total bytes with
 .BR jq (1):
 .PP
 .RS 4
 .nf
-pspp \-\-pid 1 \-\-json | jq '.total'
+pspp \-\-pid 1 \-\-json | jq '{total, total_approximate}'
 .fi
 .RE
 .SH SEE ALSO
