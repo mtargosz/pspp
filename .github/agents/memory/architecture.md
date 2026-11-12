@@ -187,7 +187,11 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - `update_ms`: Enter-to-edit digit buffer (max 8 digits; `Enter` commit, `Esc` cancel), or `←/→` ±100.
     Clamped to `100..=86_400_000` everywhere (app, config load) so tick deadlines cannot overflow.
   - Other rows: `←/→` cycles/toggles; effects apply live to app rendering/sorting/refresh behavior.
-  - Bottom line shows per-option description text.
+  - All modal overlays (`Menu`, `Options`, `Help`) render `ratatui::widgets::Clear` over the overlay rect
+    and apply `theme.main_bg` when present; `Options` wraps per-option descriptions across a 2-row box,
+    both `Options` and `Help` use single-line `"│"` scrollbar tracks without duplicate inner footers, and
+    `Menu` renders button labels inside `button_block.inner(rect)` (falling back to single-line labels on
+    tiny viewports).
 - Config schema (`serde` + TOML):
   - `update_ms`, `mem_kind`, `agg_mode`, `graph_symbol`, `base10`, `save_on_exit`,
     `sort_key`, `sort_reverse`, plus (M20) `color_theme`, `theme_background`, `truecolor`,

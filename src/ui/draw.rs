@@ -4,7 +4,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::Frame;
 
@@ -587,23 +587,61 @@ fn render_hint(frame: &mut Frame<'_>, hint_area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(line), hint_area);
 }
 
-fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
+fn menu_overlay_rect(area: Rect) -> Rect {
     let width = area.width.saturating_sub(4).clamp(24, 44);
     let height = area.height.saturating_sub(4).clamp(13, 17);
-    let overlay = centered_rect(area, width, height);
+    centered_rect(area, width, height)
+}
+
+fn options_overlay_rect(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(4).clamp(40, 78);
+    let height = area.height.saturating_sub(4).clamp(12, 22);
+    centered_rect(area, width, height)
+}
+
+fn help_overlay_rect(area: Rect) -> Rect {
+    let max_width = area.width.saturating_sub(2).max(24);
+    let max_height = area.height.saturating_sub(2).max(8);
+    let width = area.width.saturating_sub(6).clamp(24, max_width);
+    let height = area.height.saturating_sub(4).clamp(8, max_height);
+    centered_rect(area, width, height)
+}
+
+fn render_overlay_frame(
+    frame: &mut Frame<'_>,
+    overlay: Rect,
+    title: &'static str,
+    app: &App,
+) -> Option<Rect> {
+    if overlay.is_empty() {
+        return None;
+    }
+
+    frame.render_widget(Clear, overlay);
 
     let theme = &app.theme;
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .border_type(app.border_type())
         .border_style(Style::default().fg(theme.color(theme.div_line)))
         .title(Span::styled(
-            " menu ",
+            title,
             Style::default().fg(theme.color(theme.title)),
         ));
+    if let Some(bg) = theme.main_bg {
+        block = block.style(Style::default().bg(theme.color(bg)));
+    }
     let inner = block.inner(overlay);
     frame.render_widget(block, overlay);
+    Some(inner)
+}
 
+fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
+    let overlay = menu_overlay_rect(frame.area());
+    let Some(inner) = render_overlay_frame(frame, overlay, " menu ", app) else {
+        return;
+    };
+
+    let theme = &app.theme;
     let button_height = if inner.height >= 11 { 3 } else { 1 };
     let spacing = if button_height == 3 { 1 } else { 0 };
 
@@ -633,56 +671,74 @@ fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
         }
 
         let selected = *button == app.menu_selected();
-        let border_color = if selected { theme.hi_fg } else { theme.main_fg };
-        let border_type = if selected {
-            BorderType::Double
+        if rect.height >= 3 && rect.width >= 3 {
+            let border_color = if selected { theme.hi_fg } else { theme.main_fg };
+            let border_type = if selected {
+                BorderType::Double
+            } else {
+                BorderType::Plain
+            };
+
+            let button_block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(border_type)
+                .border_style(Style::default().fg(theme.color(border_color)));
+            let button_inner = button_block.inner(rect);
+            frame.render_widget(button_block, rect);
+
+            let label = Paragraph::new(button.label())
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme.color(border_color)));
+            frame.render_widget(label, button_inner);
         } else {
-            BorderType::Plain
-        };
-
-        let button_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(border_type)
-            .border_style(Style::default().fg(theme.color(border_color)));
-        frame.render_widget(button_block, rect);
-
-        let label = Paragraph::new(button.label())
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(theme.color(border_color)));
-        frame.render_widget(label, rect);
+            let style = if selected {
+                Style::default()
+                    .fg(theme.color(theme.selected_fg))
+                    .bg(theme.color(theme.selected_bg))
+            } else {
+                Style::default().fg(theme.color(theme.main_fg))
+            };
+            let line_rect = Rect {
+                x: rect.x,
+                y: rect.y + rect.height / 2,
+                width: rect.width,
+                height: 1,
+            };
+            let label = Paragraph::new(button.label())
+                .alignment(Alignment::Center)
+                .style(style);
+            frame.render_widget(label, line_rect);
+        }
     }
 
     app.set_menu_hit_test(overlay, button_rects);
 }
 
 fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    let width = area.width.saturating_sub(4).clamp(40, 78);
-    let height = area.height.saturating_sub(4).clamp(12, 22);
-    let overlay = centered_rect(area, width, height);
-
-    let theme = app.theme.clone();
-    let block = Block::bordered()
-        .border_type(app.border_type())
-        .border_style(Style::default().fg(theme.color(theme.div_line)))
-        .title(Span::styled(
-            " options ",
-            Style::default().fg(theme.color(theme.title)),
-        ));
-    let inner = block.inner(overlay);
-    frame.render_widget(block, overlay);
+    let overlay = options_overlay_rect(frame.area());
+    let Some(inner) = render_overlay_frame(frame, overlay, " options ", app) else {
+        return;
+    };
 
     if inner.width == 0 || inner.height == 0 {
+        app.set_options_hit_test(overlay, Vec::new());
         return;
     }
 
-    let sections = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
+    let theme = app.theme.clone();
+    let sections = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(inner);
     let list_area = sections[0];
     let bottom = sections[1];
 
     let label_width = 20;
     let mut row_rects = Vec::new();
     let visible_rows = usize::from(list_area.height);
+    let has_scrollbar = App::option_keys().len() > visible_rows && list_area.width > 0;
+    let row_width = if has_scrollbar && list_area.width > 1 {
+        list_area.width - 1
+    } else {
+        list_area.width
+    };
     let first = app.option_scroll_for(visible_rows);
     for (line_idx, idx) in (first..App::option_keys().len())
         .take(visible_rows)
@@ -692,7 +748,7 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
         let row_rect = Rect {
             x: list_area.x,
             y: list_area.y + u16::try_from(line_idx).unwrap_or(u16::MAX),
-            width: list_area.width,
+            width: row_width,
             height: 1,
         };
 
@@ -715,7 +771,7 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
         frame.render_widget(Paragraph::new(line).style(style), row_rect);
         row_rects.push((row_rect, idx));
     }
-    if App::option_keys().len() > visible_rows && list_area.width > 0 {
+    if has_scrollbar {
         let mut bar_state = ScrollbarState::new(
             App::option_keys()
                 .len()
@@ -727,6 +783,7 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
+                .track_symbol(Some("│"))
                 .style(Style::default().fg(theme.color(theme.div_line)))
                 .thumb_style(Style::default().fg(theme.color(theme.hi_fg))),
             list_area,
@@ -735,65 +792,37 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
     }
     app.set_options_hit_test(overlay, row_rects);
 
-    let desc_area = Rect {
-        x: bottom.x,
-        y: bottom.y,
-        width: bottom.width,
-        height: 1,
-    };
-    frame.render_widget(
-        Paragraph::new(app.selected_option_description()).style(
-            Style::default()
-                .fg(theme.color(theme.main_fg))
-                .bg(theme.color(theme.selected_bg)),
-        ),
-        desc_area,
-    );
-
-    let hint_area = Rect {
-        x: bottom.x,
-        y: bottom.y.saturating_add(1),
-        width: bottom.width,
-        height: bottom.height.saturating_sub(1),
-    };
-    frame.render_widget(
-        Paragraph::new("↑/↓ select  ←/→ change  Enter edit  Esc/q back")
-            .style(Style::default().fg(theme.color(theme.inactive_fg))),
-        hint_area,
-    );
+    if bottom.width > 0 && bottom.height > 0 {
+        let desc_style = Style::default()
+            .fg(theme.color(theme.main_fg))
+            .bg(theme.color(theme.selected_bg));
+        frame.render_widget(Block::default().style(desc_style), bottom);
+        let desc_lines: Vec<Line<'static>> =
+            help::wrap_text(app.selected_option_description(), usize::from(bottom.width))
+                .into_iter()
+                .take(usize::from(bottom.height))
+                .map(Line::from)
+                .collect();
+        frame.render_widget(Paragraph::new(desc_lines).style(desc_style), bottom);
+    }
 }
 
 fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App) {
-    let area = frame.area();
-    let max_width = area.width.saturating_sub(2).max(24);
-    let max_height = area.height.saturating_sub(2).max(8);
-    let width = area.width.saturating_sub(6).clamp(24, max_width);
-    let height = area.height.saturating_sub(4).clamp(8, max_height);
-    let overlay = centered_rect(area, width, height);
+    let overlay = help_overlay_rect(frame.area());
+    let Some(inner) = render_overlay_frame(frame, overlay, " help ", app) else {
+        app.set_help_scroll_metrics(0, 1);
+        return;
+    };
 
-    let theme = app.theme.clone();
-    let block = Block::bordered()
-        .border_type(app.border_type())
-        .border_style(Style::default().fg(theme.color(theme.div_line)))
-        .title(Span::styled(
-            " help ",
-            Style::default().fg(theme.color(theme.title)),
-        ));
-    let inner = block.inner(overlay);
-    frame.render_widget(block, overlay);
-
+    app.set_help_hit_test(overlay);
     if inner.width == 0 || inner.height == 0 {
         app.set_help_scroll_metrics(0, 1);
         return;
     }
 
-    app.set_help_hit_test(overlay);
-
-    let sections = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(inner);
-    let footer = sections[1];
+    let theme = app.theme.clone();
     // The last column is reserved for the scrollbar so text never runs underneath it.
-    let columns =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).split(sections[0]);
+    let columns = Layout::horizontal([Constraint::Min(0), Constraint::Length(1)]).split(inner);
     let body = columns[0];
     let bar_area = columns[1];
     let lines = help::build_help_lines(&theme, usize::from(body.width));
@@ -809,16 +838,13 @@ fn render_help_overlay(frame: &mut Frame<'_>, app: &mut App) {
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
+                .track_symbol(Some("│"))
                 .style(Style::default().fg(theme.color(theme.div_line)))
                 .thumb_style(Style::default().fg(theme.color(theme.hi_fg))),
             bar_area,
             &mut bar_state,
         );
     }
-
-    let footer_text = Paragraph::new("↑/↓ j/k PgUp/PgDn scroll  Esc/q back")
-        .style(Style::default().fg(theme.color(theme.inactive_fg)));
-    frame.render_widget(footer_text, footer);
 }
 
 fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
@@ -1544,5 +1570,394 @@ mod screens {
             .expect("summary line");
         assert!(summary.contains("50%"), "{summary}");
         assert!(summary.contains("Σ FOOTPRINT 1.2 GiB"), "{summary}");
+    }
+
+    fn rect_lines(buffer: &Buffer, rect: ratatui::layout::Rect) -> Vec<String> {
+        (rect.y..rect.y + rect.height)
+            .map(|y| {
+                (rect.x..rect.x + rect.width)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn overlays_clear_underlying_table_and_apply_main_bg() {
+        use crate::ui::app::AppMode;
+        use crate::ui::theme::{Rgb, Theme, ThemeSpec};
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Block;
+
+        let width = 110;
+        let height = 28;
+        let area = Rect::new(0, 0, width, height);
+        let nord_rgb = Rgb(0x2e, 0x34, 0x40);
+        let nord_spec = ThemeSpec {
+            main_bg: Some(nord_rgb),
+            ..ThemeSpec::default()
+        };
+
+        // Build both `synthetic_app` and a worker-populated variant whose long COMM names and
+        // extra rows span directly beneath all three centered modal rectangles.
+        let worker_app = || {
+            let mut procs = vec![
+                ProcRec {
+                    pid: 1,
+                    ppid: 0,
+                    comm: "launchd".into(),
+                    mem: MemSet {
+                        rss: 100 * MIB,
+                        footprint: Some(100 * MIB),
+                        ..MemSet::default()
+                    },
+                },
+                ProcRec {
+                    pid: 2,
+                    ppid: 1,
+                    comm: "shell".into(),
+                    mem: MemSet {
+                        rss: 200 * MIB,
+                        footprint: Some(200 * MIB),
+                        ..MemSet::default()
+                    },
+                },
+                ProcRec {
+                    pid: 3,
+                    ppid: 1,
+                    comm: "daemon".into(),
+                    mem: MemSet {
+                        rss: 500 * MIB,
+                        footprint: Some(500 * MIB),
+                        ..MemSet::default()
+                    },
+                },
+            ];
+            for idx in 0..20 {
+                procs.push(ProcRec {
+                    pid: 100 + idx,
+                    ppid: 2,
+                    comm: format!("worker-{idx:02}-background-service-process-name"),
+                    mem: MemSet {
+                        rss: 80 * MIB,
+                        footprint: Some(80 * MIB),
+                        ..MemSet::default()
+                    },
+                });
+            }
+            let mut app = App::with_snapshot(
+                Snapshot {
+                    procs,
+                    total_mem: 4096 * MIB,
+                    used_mem: 2048 * MIB,
+                },
+                UiSettings {
+                    mem_kind: MemKind::Footprint,
+                    truecolor: crate::ui::theme::TruecolorMode::On,
+                    ..UiSettings::default()
+                },
+            );
+            app.mem_history.push(2048 * MIB);
+            app
+        };
+
+        for make_base_app in [
+            || synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None),
+            worker_app,
+        ] {
+            for with_nord_bg in [false, true] {
+                for (mode, overlay) in [
+                    (AppMode::Menu, super::menu_overlay_rect(area)),
+                    (AppMode::Options, super::options_overlay_rect(area)),
+                    (AppMode::Help, super::help_overlay_rect(area)),
+                ] {
+                    let mut app = make_base_app();
+                    if with_nord_bg {
+                        app.theme = Theme::build(true, true, Some(&nord_spec));
+                    } else {
+                        app.theme = Theme::build(true, false, Some(&nord_spec));
+                    }
+
+                    // Sanity-check that Normal mode actually paints `■` meters inside `overlay`.
+                    let (_, normal_buf) = render_sized(&mut app, width, height);
+                    assert!(
+                        rect_lines(&normal_buf, overlay)
+                            .iter()
+                            .any(|line| line.contains('■')),
+                        "expected Normal mode to draw meters inside {overlay:?}"
+                    );
+
+                    app.mode = mode;
+                    let (_, buffer) = render_sized(&mut app, width, height);
+                    let overlay_text = rect_lines(&buffer, overlay).join("\n");
+
+                    for leaked in [
+                        "launchd", "shell", "daemon", "worker", "plugin", "stray", "■",
+                    ] {
+                        assert!(
+                            !overlay_text.contains(leaked),
+                            "{mode:?} (nord={with_nord_bg}) leaked {leaked:?}:\n{overlay_text}"
+                        );
+                    }
+
+                    let inner = Block::bordered().inner(overlay);
+                    let expected_bg = if with_nord_bg {
+                        Color::Rgb(nord_rgb.0, nord_rgb.1, nord_rgb.2)
+                    } else {
+                        Color::Reset
+                    };
+                    let selected_bg = app.theme.color(app.theme.selected_bg);
+
+                    for y in overlay.y..overlay.y + overlay.height {
+                        for x in overlay.x..overlay.x + overlay.width {
+                            let bg = buffer[(x, y)].bg;
+                            let in_inner = x >= inner.x
+                                && x < inner.x + inner.width
+                                && y >= inner.y
+                                && y < inner.y + inner.height;
+                            let uses_selected_bg = mode == AppMode::Options
+                                && in_inner
+                                && (y == inner.y || y >= inner.y + inner.height - 2);
+                            if uses_selected_bg {
+                                assert_eq!(
+                                    bg, selected_bg,
+                                    "{mode:?} at ({x},{y}) expected selected_bg"
+                                );
+                            } else {
+                                assert_eq!(
+                                    bg, expected_bg,
+                                    "{mode:?} (nord={with_nord_bg}) at ({x},{y}) had unexpected bg"
+                                );
+                            }
+                        }
+                    }
+
+                    // At 110x28, Options has 18 list rows for 17 options; row 18 must be blank.
+                    if mode == AppMode::Options {
+                        let empty_row_y = inner.y + 17;
+                        let empty_row: String = (inner.x..inner.x + inner.width)
+                            .map(|x| buffer[(x, empty_row_y)].symbol().to_owned())
+                            .collect();
+                        assert!(
+                            empty_row.chars().all(|ch| ch == ' '),
+                            "expected unused Options list row to be empty, got {empty_row:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn menu_buttons_center_labels_inside_interiors_and_degrade_on_short_terminals() {
+        use crate::ui::app::AppMode;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Block;
+
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        app.mode = AppMode::Menu;
+        let (_, buffer) = render_sized(&mut app, 110, 28);
+
+        let overlay = super::menu_overlay_rect(Rect::new(0, 0, 110, 28));
+        let inner = Block::bordered().inner(overlay);
+        let button_height = 3_u16;
+        let spacing = 1_u16;
+        let total_buttons_height = button_height * 3 + spacing * 2;
+        let first_y = inner.y + (inner.height - total_buttons_height) / 2;
+
+        for (idx, (label, selected)) in [("Options", true), ("Help", false), ("Quit", false)]
+            .into_iter()
+            .enumerate()
+        {
+            let button_rect = Rect {
+                x: inner.x + 1,
+                y: first_y + u16::try_from(idx).unwrap() * (button_height + spacing),
+                width: inner.width - 2,
+                height: button_height,
+            };
+            let rows = rect_lines(&buffer, button_rect);
+            if selected {
+                assert!(
+                    rows[0].starts_with('╔')
+                        && rows[0].ends_with('╗')
+                        && rows[0].chars().all(|c| matches!(c, '╔' | '═' | '╗')),
+                    "selected top border overwritten: {:?}",
+                    rows[0]
+                );
+                assert!(
+                    rows[1].starts_with('║') && rows[1].ends_with('║') && rows[1].contains(label),
+                    "selected interior row missing {label}: {:?}",
+                    rows[1]
+                );
+                assert!(
+                    rows[2].starts_with('╚')
+                        && rows[2].ends_with('╝')
+                        && rows[2].chars().all(|c| matches!(c, '╚' | '═' | '╝')),
+                    "selected bottom border malformed: {:?}",
+                    rows[2]
+                );
+            } else {
+                assert!(
+                    rows[0].starts_with('┌')
+                        && rows[0].ends_with('┐')
+                        && rows[0].chars().all(|c| matches!(c, '┌' | '─' | '┐')),
+                    "unselected top border overwritten: {:?}",
+                    rows[0]
+                );
+                assert!(
+                    rows[1].starts_with('│') && rows[1].ends_with('│') && rows[1].contains(label),
+                    "unselected interior row missing {label}: {:?}",
+                    rows[1]
+                );
+            }
+        }
+
+        // Short terminal (20x8): single-line unbordered buttons render cleanly without panicking.
+        let (short_lines, short_buf) = render_sized(&mut app, 20, 8);
+        let short_joined = short_lines.join("\n");
+        for label in ["Options", "Help", "Quit"] {
+            assert!(
+                short_joined.contains(label),
+                "20x8 menu missing {label}:\n{short_joined}"
+            );
+        }
+        let options_y = short_lines
+            .iter()
+            .position(|line| line.contains("Options"))
+            .expect("Options row on 20x8") as u16;
+        let options_x = short_lines[usize::from(options_y)]
+            .find("Options")
+            .expect("Options col") as u16;
+        assert_eq!(
+            short_buf[(options_x, options_y)].bg,
+            app.theme.color(app.theme.selected_bg)
+        );
+        assert_eq!(
+            short_buf[(options_x, options_y)].fg,
+            app.theme.color(app.theme.selected_fg)
+        );
+    }
+
+    #[test]
+    fn options_wraps_update_ms_description_in_two_rows_without_duplicate_hint_bars() {
+        use crate::ui::app::{AppMode, OptionKey};
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Block;
+
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        app.mode = AppMode::Options;
+        assert_eq!(app.selected_option_key(), OptionKey::UpdateMs);
+
+        let (lines, buffer) = render_sized(&mut app, 80, 24);
+        let overlay = super::options_overlay_rect(Rect::new(0, 0, 80, 24));
+        let inner = Block::bordered().inner(overlay);
+        let desc_rect = Rect {
+            x: inner.x,
+            y: inner.y + inner.height - 2,
+            width: inner.width,
+            height: 2,
+        };
+
+        let desc_rows = rect_lines(&buffer, desc_rect);
+        let desc_joined = desc_rows
+            .iter()
+            .map(|row| row.trim())
+            .filter(|row| !row.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            desc_joined.contains("Refresh interval") && desc_joined.contains("adjusts by 100."),
+            "UpdateMs description clipped: {desc_rows:?}"
+        );
+        assert_eq!(desc_joined, OptionKey::UpdateMs.description());
+
+        let selected_bg = app.theme.color(app.theme.selected_bg);
+        for y in desc_rect.y..desc_rect.y + desc_rect.height {
+            for x in desc_rect.x..desc_rect.x + desc_rect.width {
+                assert_eq!(
+                    buffer[(x, y)].bg,
+                    selected_bg,
+                    "description cell ({x},{y}) missing selected_bg"
+                );
+            }
+        }
+
+        // Hint bar appears only once (outer frame bottom hint row, y = 22), never inside Options.
+        let hint_rows: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(y, line)| line.contains("Esc/q back").then_some(y))
+            .collect();
+        assert_eq!(
+            hint_rows,
+            vec![22],
+            "unexpected hint rows:\n{}",
+            lines.join("\n")
+        );
+
+        // Help at 80x24 likewise has only the outer bottom hint row, never an internal duplicate.
+        app.mode = AppMode::Help;
+        let (help_lines, _) = render_sized(&mut app, 80, 24);
+        let help_hint_rows: Vec<usize> = help_lines
+            .iter()
+            .enumerate()
+            .filter_map(|(y, line)| line.contains("Esc/q back").then_some(y))
+            .collect();
+        assert_eq!(
+            help_hint_rows,
+            vec![22],
+            "unexpected Help hint rows:\n{}",
+            help_lines.join("\n")
+        );
+    }
+
+    #[test]
+    fn overflowing_options_and_help_scrollbars_use_single_line_track() {
+        use crate::ui::app::AppMode;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::Block;
+
+        // Overflowing Options at 80x16 (8 visible rows for 17 options).
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        app.mode = AppMode::Options;
+        let (opt_lines, opt_buf) = render_sized(&mut app, 80, 16);
+        assert!(
+            !opt_lines.iter().any(|line| line.contains('║')),
+            "Options rendered double-line scrollbar track:\n{}",
+            opt_lines.join("\n")
+        );
+        let opt_inner =
+            Block::bordered().inner(super::options_overlay_rect(Rect::new(0, 0, 80, 16)));
+        let opt_bar_x = opt_inner.x + opt_inner.width - 1;
+        let opt_list_height = opt_inner.height - 2;
+        let opt_bar: Vec<&str> = (opt_inner.y..opt_inner.y + opt_list_height)
+            .map(|y| opt_buf[(opt_bar_x, y)].symbol())
+            .collect();
+        assert!(
+            opt_bar.iter().all(|sym| matches!(*sym, "│" | "█"))
+                && opt_bar.contains(&"│")
+                && opt_bar.contains(&"█"),
+            "unexpected Options scrollbar glyphs: {opt_bar:?}"
+        );
+
+        // Overflowing Help at 80x20.
+        app.mode = AppMode::Help;
+        let (help_lines, help_buf) = render_sized(&mut app, 80, 20);
+        assert!(
+            !help_lines.iter().any(|line| line.contains('║')),
+            "Help rendered double-line scrollbar track:\n{}",
+            help_lines.join("\n")
+        );
+        let help_inner = Block::bordered().inner(super::help_overlay_rect(Rect::new(0, 0, 80, 20)));
+        let help_bar_x = help_inner.x + help_inner.width - 1;
+        let help_bar: Vec<&str> = (help_inner.y..help_inner.y + help_inner.height)
+            .map(|y| help_buf[(help_bar_x, y)].symbol())
+            .collect();
+        assert!(
+            help_bar.iter().all(|sym| matches!(*sym, "│" | "█"))
+                && help_bar.contains(&"│")
+                && help_bar.contains(&"█"),
+            "unexpected Help scrollbar glyphs: {help_bar:?}"
+        );
     }
 }

@@ -281,7 +281,7 @@ fn push_wrapped_paragraph(
     }
 }
 
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if text.is_empty() {
         return vec![String::new()];
     }

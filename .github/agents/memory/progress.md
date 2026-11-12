@@ -30,7 +30,7 @@
 - [x] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
 - [x] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
 - [x] M23 refactor: single source of truth for enums; docs pass
-- [ ] M24 fix(ui): clear overlays, center menu button labels, polish scrollbars and footers
+- [x] M24 fix(ui): clear overlays, center menu button labels, polish scrollbars and footers
 - [ ] M25 fix(ui): fix ancestor tree connectors, meter styling, column widths, and responsive status/filter bar
 - [ ] M26 fix(collect): accurate macOS RSS/VSZ approximation, lazy rusage, and unified Option<u64> MemSet
 - [ ] M27 fix(config,cli): persist save_on_exit=false, align sort direction, enrich JSON approx fields
@@ -355,6 +355,17 @@
   in `.github/instructions/` (`rust-platform.instructions.md`, `tui-btop.instructions.md`, `docs-sync.instructions.md`).
 - Added `.github/prompts/implement-review.prompt.md` (`/implement-review`) and seeded milestones M24–M29 from
   `prompts/pspp_review_2_prompt.md` into the plan above; synced `README.md` and `decisions.md`.
+
+### 2026-11-12 — ui-stylist & reviewer (M24)
+- Added `render_overlay_frame` in `src/ui/draw.rs` so `Menu`, `Options`, and `Help` render `ratatui::widgets::Clear`
+  over the overlay rect and paint `theme.main_bg` when enabled, eliminating bled-through process text and meters.
+- Centered `Menu` button labels inside `button_block.inner(rect)` (`rect.height >= 3 && rect.width >= 3`) with
+  unbordered single-line fallback on short/narrow terminals.
+- Removed duplicate internal hint footers from `Options` and `Help`, wrapped `Options` descriptions across a
+  2-row `selected_bg` box via `help::wrap_text` (no mid-word clipping on `UpdateMs`), and switched `Options`/`Help`
+  scrollbars to single-line `.track_symbol(Some("│"))` with right-column reservation in `Options`.
+- Added 4 `TestBackend` tests verifying overlay clearing/`main_bg`, interior button labels, 2-row description
+  wrapping without duplicate hint bars, and single-line scrollbar tracks; reviewed and all gates green.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
