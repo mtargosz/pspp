@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
@@ -299,7 +299,11 @@ fn render_body(
     if rows.is_empty() {
         if body_area.height > 0 && body_area.width > 0 {
             let msg = if app.is_filter_active() {
-                "no matching processes (press c to clear)"
+                if app.mode == AppMode::FilterInput {
+                    "no matching processes (Esc to cancel, Del/Ctrl-U to clear)"
+                } else {
+                    "no matching processes (press c to clear)"
+                }
             } else {
                 "no processes"
             };
@@ -342,14 +346,13 @@ fn render_body(
 
         let selected = row_idx == app.cursor();
         if selected {
-            frame.render_widget(
-                Block::default().style(
-                    Style::default()
-                        .bg(app.theme.color(app.theme.selected_bg))
-                        .fg(app.theme.color(app.theme.selected_fg)),
-                ),
-                row_rect,
-            );
+            let mut row_style = Style::default()
+                .bg(app.theme.color(app.theme.selected_bg))
+                .fg(app.theme.color(app.theme.selected_fg));
+            if app.no_color {
+                row_style = row_style.add_modifier(Modifier::REVERSED);
+            }
+            frame.render_widget(Block::default().style(row_style), row_rect);
         }
 
         let row_columns = columns.map(|column| Rect {
@@ -395,10 +398,12 @@ fn render_row_cells(
     selected: bool,
 ) {
     let theme = &app.theme;
-    let selected_style = Style::default()
+    let mut selected_style = Style::default()
         .fg(theme.color(theme.selected_fg))
         .bg(theme.color(theme.selected_bg));
-
+    if app.no_color {
+        selected_style = selected_style.add_modifier(Modifier::REVERSED);
+    }
     let pid_text = row.pid.to_string();
     let own_text = with_approx_suffix(format_size(row.own, app.base10), row.own_approximate);
     let agg_text = with_approx_suffix(
@@ -499,14 +504,19 @@ fn render_row_cells(
 }
 
 fn meter_line(width: usize, value: u64, scale: u64, app: &App, selected: bool) -> Line<'static> {
-    Line::from(graph::meter_spans_styled(
+    let line = Line::from(graph::meter_spans_styled(
         &app.theme,
         width,
         value,
         scale,
         selected,
         app.ascii_meters(),
-    ))
+    ));
+    if selected && app.no_color {
+        line.style(Style::default().add_modifier(Modifier::REVERSED))
+    } else {
+        line
+    }
 }
 
 struct StatusSegment {
@@ -733,6 +743,7 @@ fn hint_segments(mode: AppMode) -> &'static [(&'static str, &'static str)] {
             ("↑/↓ j/k PgUp/PgDn", ""),
             ("←/→", ""),
             ("Space/Enter", ""),
+            ("z/Z", "fold"),
             ("e", "agg"),
             ("m", "mem"),
             ("s", "sort"),
@@ -905,18 +916,25 @@ fn render_menu_overlay(frame: &mut Frame<'_>, app: &mut App) {
             let button_inner = button_block.inner(rect);
             frame.render_widget(button_block, rect);
 
+            let mut label_style = Style::default().fg(theme.color(border_color));
+            if selected && app.no_color {
+                label_style = label_style.add_modifier(Modifier::REVERSED);
+            }
             let label = Paragraph::new(button.label())
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(theme.color(border_color)));
+                .style(label_style);
             frame.render_widget(label, button_inner);
         } else {
-            let style = if selected {
+            let mut style = if selected {
                 Style::default()
                     .fg(theme.color(theme.selected_fg))
                     .bg(theme.color(theme.selected_bg))
             } else {
                 Style::default().fg(theme.color(theme.main_fg))
             };
+            if selected && app.no_color {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
             let line_rect = Rect {
                 x: rect.x,
                 y: rect.y + rect.height / 2,
@@ -980,9 +998,13 @@ fn render_options_overlay(frame: &mut Frame<'_>, app: &mut App) {
         );
 
         let style = if selected {
-            Style::default()
+            let mut selected_style = Style::default()
                 .fg(theme.color(theme.selected_fg))
-                .bg(theme.color(theme.selected_bg))
+                .bg(theme.color(theme.selected_bg));
+            if app.no_color {
+                selected_style = selected_style.add_modifier(Modifier::REVERSED);
+            }
+            selected_style
         } else {
             Style::default().fg(theme.color(theme.main_fg))
         };
@@ -1438,6 +1460,7 @@ mod tests {
                 .collect()
         };
 
+        assert!(text(AppMode::Normal, 200).contains("z/Z fold"));
         assert!(text(AppMode::Normal, 200).contains("q quit"));
         assert!(text(AppMode::FilterInput, 200).contains("Enter apply"));
         assert!(text(AppMode::Menu, 200).contains("Enter open"));
@@ -1597,13 +1620,24 @@ mod screens {
             .find("METER")
             .map(|byte| unicode_width::UnicodeWidthStr::width(&header[..byte]))
             .unwrap_or(0);
-        let empty = app.theme.color(app.theme.meter_bg);
+        let raw_empty = app.theme.color(app.theme.meter_bg);
+        let selected_bg = app.theme.color(app.theme.selected_bg);
+        let selected_empty = if raw_empty == selected_bg && raw_empty != Color::Reset {
+            Color::Gray
+        } else {
+            raw_empty
+        };
         (meter_x..meter_x + 18)
             .filter(|x| {
                 let cell = &buffer[(
                     u16::try_from(*x).unwrap_or(0),
                     u16::try_from(y).unwrap_or(0),
                 )];
+                let empty = if cell.bg == selected_bg && selected_bg != Color::Reset {
+                    selected_empty
+                } else {
+                    raw_empty
+                };
                 matches!(cell.symbol(), "■" | "#") && cell.fg != empty
             })
             .count()
@@ -2323,8 +2357,8 @@ mod screens {
             assert_eq!(buffer[(x, plugin_y)].fg, meter_bg);
         }
 
-        // `no_color = true` switches meters to '#' / '-' even when graph_symbol is Braille.
-        app.no_color = true;
+        // `set_no_color(true)` switches meters to '#' / '-' even when graph_symbol is Braille.
+        app.set_no_color(true);
         let (nc_lines, _) = render(&mut app);
         assert!(!nc_lines.iter().any(|l| l.contains('■')));
         assert!(nc_lines
@@ -2550,24 +2584,53 @@ mod screens {
             "double space in zero-meter mem summary: {summary_row:?}"
         );
 
-        // 3) Zero-match filter shows centered inactive_fg notice; empty snapshot shows "no processes".
+        // 3) Zero-match filter shows mode-accurate centered inactive_fg notice; empty snapshot shows "no processes".
         let mut unmatched = synthetic_app(
             AggMode::Rollup,
             GraphSymbolSetting::Braille,
             Some("zzzz_none"),
         );
+        assert_eq!(unmatched.mode, AppMode::Normal);
         let (empty_lines, empty_buf) = render_sized(&mut unmatched, 80, 24);
         let (notice_y, notice_line) = empty_lines
             .iter()
             .enumerate()
             .find(|(_, l)| l.contains("no matching processes (press c to clear)"))
-            .expect("missing zero-match notice");
+            .expect("missing Normal zero-match notice");
         let nx =
             UnicodeWidthStr::width(&notice_line[..notice_line.find("no matching").unwrap()]) as u16;
         assert_eq!(
             empty_buf[(nx, notice_y as u16)].fg,
             unmatched.theme.color(unmatched.theme.inactive_fg)
         );
+
+        let mut live_unmatched = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        live_unmatched.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        for ch in "zzzz_none".chars() {
+            live_unmatched.on_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(live_unmatched.mode, AppMode::FilterInput);
+        let (live_lines, live_buf) = render_sized(&mut live_unmatched, 80, 24);
+        assert!(
+            !live_lines.iter().any(|l| l.contains("press c to clear")),
+            "FilterInput must not advertise 'c' to clear while typing"
+        );
+        let (live_y, live_line) = live_lines
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains("no matching processes (Esc to cancel, Del/Ctrl-U to clear)"))
+            .expect("missing FilterInput zero-match notice");
+        let live_nx =
+            UnicodeWidthStr::width(&live_line[..live_line.find("no matching").unwrap()]) as u16;
+        assert_eq!(
+            live_buf[(live_nx, live_y as u16)].fg,
+            live_unmatched.theme.color(live_unmatched.theme.inactive_fg)
+        );
+        live_unmatched.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let (committed_lines, _) = render_sized(&mut live_unmatched, 80, 24);
+        assert!(committed_lines
+            .iter()
+            .any(|l| l.contains("no matching processes (press c to clear)")));
 
         let mut blank_snap = App::with_snapshot(
             Snapshot {
@@ -2657,5 +2720,275 @@ mod screens {
         };
         assert_eq!(pid_end_col(&row1, " 10 "), pid_end_col(&row3, " 30 "));
         assert_eq!(pid_end_col(&row2, " 20 "), pid_end_col(&row3, " 30 "));
+    }
+
+    #[test]
+    fn force_tty_renders_square_corners_tty_graphs_ascii_meters_and_ansi16_only() {
+        use crate::ui::app::{AppMode, OptionKey};
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        assert_eq!(app.graph_symbol, GraphSymbolSetting::Braille);
+        assert!(app.rounded_corners);
+
+        // Enable `force_tty` via Options while keeping `graph_symbol = Braille`,
+        // `rounded_corners = true`, and `truecolor = On`.
+        app.mode = AppMode::Options;
+        while app.selected_option_key() != OptionKey::ForceTty {
+            app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        app.mode = AppMode::Normal;
+        assert!(app.force_tty);
+        assert_eq!(app.graph_symbol, GraphSymbolSetting::Braille);
+        assert!(app.rounded_corners);
+
+        let (lines, buffer) = render(&mut app);
+
+        // Outer frame and `mem` sub-box render square corners (`┌`, `┐`, `└`, `┘`), zero rounded.
+        assert_eq!(buffer[(0, 0)].symbol(), "┌");
+        assert_eq!(buffer[(WIDTH - 1, 0)].symbol(), "┐");
+        assert_eq!(buffer[(0, HEIGHT - 1)].symbol(), "└");
+        assert_eq!(buffer[(WIDTH - 1, HEIGHT - 1)].symbol(), "┘");
+        assert_eq!(buffer[(1, 2)].symbol(), "┌");
+        assert_eq!(buffer[(WIDTH - 2, 2)].symbol(), "┐");
+        assert_eq!(buffer[(1, 7)].symbol(), "└");
+        assert_eq!(buffer[(WIDTH - 2, 7)].symbol(), "┘");
+        assert!(
+            !lines.iter().any(|line| line.contains(['╭', '╮', '╰', '╯'])),
+            "force_tty left rounded corners:\n{}",
+            lines.join("\n")
+        );
+
+        // Memory history graph uses TTY glyphs (`░`, `▒`, `█`), never braille or quadrant blocks.
+        let braille = |c: char| ('\u{2801}'..='\u{28ff}').contains(&c);
+        let block_only = |c: char| "▗▐▖▄▟▌▙".contains(c);
+        let tty_only = |c: char| "░▒".contains(c);
+        let graph: String = lines[3..=5].join("");
+        assert!(
+            graph.chars().any(tty_only),
+            "expected TTY graph glyphs: {graph:?}"
+        );
+        assert!(
+            !graph.chars().any(braille),
+            "unexpected braille in force_tty: {graph:?}"
+        );
+        assert!(
+            !graph.chars().any(block_only),
+            "unexpected block in force_tty: {graph:?}"
+        );
+
+        // Meters use `#` / `-` with zero `■` glyphs.
+        assert!(!lines.iter().any(|l| l.contains('■')));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("used 2.0 GiB / 4.0 GiB #") && l.contains("- 50%")));
+        assert!(row_of(&lines, "launchd").1.contains("##################"));
+        assert!(row_of(&lines, "shell").1.contains("#########---------"));
+        assert!(row_of(&lines, "plugin").1.contains("------------------"));
+
+        // Selecting `shell` (50% meter fill) keeps every `#` and `-` cell distinct from `selected_bg`.
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let (sel_lines, sel_buf) = render(&mut app);
+        let header = sel_lines
+            .iter()
+            .find(|line| line.contains("METER"))
+            .expect("header line");
+        let meter_x =
+            unicode_width::UnicodeWidthStr::width(&header[..header.find("METER").expect("METER")])
+                as u16;
+        let (shell_y, shell_line) = row_of(&sel_lines, "shell");
+        assert!(shell_line.contains("#########---------"));
+        assert_eq!(filled_meter_cells(&app, &sel_buf, &sel_lines, shell_y), 9);
+        for x in meter_x..meter_x + 18 {
+            let cell = &sel_buf[(x, shell_y as u16)];
+            assert_ne!(
+                cell.fg, cell.bg,
+                "selected shell meter cell at x={x} had invisible fg == bg ({:?})",
+                cell.fg
+            );
+        }
+
+        // Zero `Color::Rgb` or `Color::Indexed` cells across Normal, Menu, Options, and Help.
+        for mode in [
+            AppMode::Normal,
+            AppMode::Menu,
+            AppMode::Options,
+            AppMode::Help,
+        ] {
+            app.mode = mode;
+            let (mode_lines, mode_buf) = render(&mut app);
+            assert!(
+                !mode_lines
+                    .iter()
+                    .any(|line| line.contains(['╭', '╮', '╰', '╯'])),
+                "{mode:?} rendered rounded corners under force_tty"
+            );
+            let mut saw_ansi16 = false;
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    let cell = &mode_buf[(x, y)];
+                    assert!(
+                        !matches!(cell.fg, Color::Rgb(..) | Color::Indexed(..)),
+                        "{mode:?} cell ({x},{y}) fg {:?} used non-ANSI16 colour",
+                        cell.fg
+                    );
+                    assert!(
+                        !matches!(cell.bg, Color::Rgb(..) | Color::Indexed(..)),
+                        "{mode:?} cell ({x},{y}) bg {:?} used non-ANSI16 colour",
+                        cell.bg
+                    );
+                    if cell.fg != Color::Reset {
+                        saw_ansi16 = true;
+                    }
+                }
+            }
+            assert!(saw_ansi16, "{mode:?} expected ANSI-16 colours");
+        }
+    }
+
+    #[test]
+    fn no_color_renders_reset_across_all_modes_with_reversed_selection_and_ascii_meters() {
+        use crate::ui::app::AppMode;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::layout::Rect;
+        use ratatui::style::Modifier;
+        use ratatui::widgets::Block;
+
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        // Select `shell` (50% meter fill: `#########---------`) so the selected row tests both
+        // filled `#` and empty `-` meter cells under `Modifier::REVERSED`.
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.set_no_color(true);
+
+        let assert_all_reset = |buf: &Buffer, width: u16, height: u16, ctx: &str| {
+            for y in 0..height {
+                for x in 0..width {
+                    let cell = &buf[(x, y)];
+                    assert_eq!(
+                        cell.fg,
+                        Color::Reset,
+                        "{ctx} cell ({x},{y}) fg was {:?}",
+                        cell.fg
+                    );
+                    assert_eq!(
+                        cell.bg,
+                        Color::Reset,
+                        "{ctx} cell ({x},{y}) bg was {:?}",
+                        cell.bg
+                    );
+                }
+            }
+        };
+
+        // 1) Normal mode: square corners, TTY graph, `#`/`-` meters, Color::Reset everywhere,
+        //    and `Modifier::REVERSED` across the entire selected row (`shell`, including meters).
+        app.mode = AppMode::Normal;
+        let (lines, normal_buf) = render(&mut app);
+        assert_all_reset(&normal_buf, WIDTH, HEIGHT, "Normal");
+        assert!(!lines.iter().any(|l| l.contains(['╭', '╮', '╰', '╯', '■'])));
+        assert!(row_of(&lines, "launchd").1.contains("##################"));
+        assert!(row_of(&lines, "shell").1.contains("#########---------"));
+        assert!(row_of(&lines, "plugin").1.contains("------------------"));
+
+        let (shell_y, _) = row_of(&lines, "shell");
+        let shell_y = shell_y as u16;
+        for x in 1..WIDTH - 1 {
+            assert!(
+                normal_buf[(x, shell_y)]
+                    .modifier
+                    .contains(Modifier::REVERSED),
+                "selected row cell ({x},{shell_y}) sym={:?} missing REVERSED",
+                normal_buf[(x, shell_y)].symbol()
+            );
+        }
+        assert!(
+            !normal_buf[(0, shell_y)]
+                .modifier
+                .contains(Modifier::REVERSED),
+            "left frame border should not be REVERSED"
+        );
+        for other in ["launchd", "editor", "plugin", "build", "daemon", "stray"] {
+            let (other_y, _) = row_of(&lines, other);
+            let other_y = other_y as u16;
+            for x in 0..WIDTH {
+                assert!(
+                    !normal_buf[(x, other_y)]
+                        .modifier
+                        .contains(Modifier::REVERSED),
+                    "unselected row {other} at ({x},{other_y}) should not be REVERSED"
+                );
+            }
+        }
+
+        // 2) Menu mode: Color::Reset everywhere, selected button interior (`Options`) REVERSED,
+        //    button borders and unselected buttons (`Help`, `Quit`) unreversed; short 20x8 too.
+        app.mode = AppMode::Menu;
+        let (_, menu_buf) = render(&mut app);
+        assert_all_reset(&menu_buf, WIDTH, HEIGHT, "Menu");
+        let menu_rect = super::menu_overlay_rect(Rect::new(0, 0, WIDTH, HEIGHT));
+        let menu_inner = Block::bordered().inner(menu_rect);
+        let first_btn_y = menu_inner.y + (menu_inner.height - (3 * 3 + 2)) / 2;
+        for (idx, selected) in [(0_u16, true), (1, false), (2, false)] {
+            let btn = Rect {
+                x: menu_inner.x + 1,
+                y: first_btn_y + idx * 4,
+                width: menu_inner.width - 2,
+                height: 3,
+            };
+            let btn_inner = Block::bordered().inner(btn);
+            for x in btn_inner.x..btn_inner.x + btn_inner.width {
+                assert_eq!(
+                    menu_buf[(x, btn_inner.y)]
+                        .modifier
+                        .contains(Modifier::REVERSED),
+                    selected,
+                    "Menu button {idx} interior at ({x},{}) REVERSED mismatch",
+                    btn_inner.y
+                );
+            }
+            assert!(
+                !menu_buf[(btn.x, btn.y)]
+                    .modifier
+                    .contains(Modifier::REVERSED),
+                "Menu button {idx} border should not be REVERSED"
+            );
+        }
+        let (short_menu_lines, short_menu_buf) = render_sized(&mut app, 20, 8);
+        assert_all_reset(&short_menu_buf, 20, 8, "Menu 20x8");
+        let opt_y = short_menu_lines
+            .iter()
+            .position(|l| l.contains("Options"))
+            .expect("Options row") as u16;
+        let opt_x = short_menu_lines[usize::from(opt_y)]
+            .find("Options")
+            .expect("Options col") as u16;
+        assert!(short_menu_buf[(opt_x, opt_y)]
+            .modifier
+            .contains(Modifier::REVERSED));
+
+        // 3) Options mode (full and 80x16 overflowing scrollbar): Color::Reset everywhere,
+        //    only the selected option row inside the modal is REVERSED.
+        app.mode = AppMode::Options;
+        let (_, opt_buf) = render_sized(&mut app, 80, 16);
+        assert_all_reset(&opt_buf, 80, 16, "Options 80x16");
+        let opt_rect = super::options_overlay_rect(Rect::new(0, 0, 80, 16));
+        let opt_inner = Block::bordered().inner(opt_rect);
+        for y in opt_rect.y..opt_rect.y + opt_rect.height {
+            for x in opt_rect.x..opt_rect.x + opt_rect.width {
+                let expected_rev =
+                    y == opt_inner.y && x >= opt_inner.x && x < opt_inner.x + opt_inner.width - 1;
+                assert_eq!(
+                    opt_buf[(x, y)].modifier.contains(Modifier::REVERSED),
+                    expected_rev,
+                    "Options cell ({x},{y}) REVERSED mismatch"
+                );
+            }
+        }
+
+        // 4) Help mode (80x20 with active scrollbar): Color::Reset across every cell.
+        app.mode = AppMode::Help;
+        let (_, help_buf) = render_sized(&mut app, 80, 20);
+        assert_all_reset(&help_buf, 80, 20, "Help 80x20");
     }
 }

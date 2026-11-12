@@ -34,7 +34,7 @@
 - [x] M25 fix(ui): fix ancestor tree connectors, meter styling, column widths, and responsive status/filter bar
 - [x] M26 fix(collect): accurate macOS RSS/VSZ approximation, lazy rusage, and unified Option<u64> MemSet
 - [x] M27 fix(config,cli): persist save_on_exit=false, align sort direction, enrich JSON approx fields
-- [ ] M28 feat(ui): live filter-as-you-type, collapse/expand-all keys, force_tty fidelity, and event-loop coalescing
+- [x] M28 feat(ui): live filter-as-you-type, collapse/expand-all keys, force_tty fidelity, and event-loop coalescing
 - [ ] M29 docs(all): fix stale man page, option descriptions, CI path docs, and regenerate tables
 
 ## Log
@@ -399,6 +399,18 @@
   `collect_subtree_pids` to walk `ProcTree::child_pids`.
 - Added unit and CLI integration tests covering all four `save_on_exit` quadrants, coupled sort persistence,
   `-r`, `PATTERN` + `-f` conflict, JSON approx fields, and `ProcTree`-aligned `--pid` traversal; all gates green.
+
+### 2026-11-12 — ui-stylist & reviewer (M28)
+- Implemented live filter-as-you-type (`FilterSnapshot`, `Char`/`Backspace`/`Ctrl-W`/`Delete`/`Ctrl-U`) with
+  full `Esc` snapshot restoration and live background-tick remapping, plus mode-specific zero-match hints.
+- Added monotonic `z`/`[` (collapse non-root subtrees, then roots, preserving ancestor selection) and `Z`/`]`
+  (expand all) shortcuts in Normal mode.
+- Completed `force_tty` (`PaletteMode::Ansi16`, `Tty` graphs, `#`/`-` meters, square borders) and `NO_COLOR`
+  (`PaletteMode::NoColor`, `Color::Reset` + `Modifier::REVERSED` selection) fidelity without mutating `UiSettings`.
+- Added event-loop coalescing (`drain_ready_events` up to 64/frame) and dirty-only redraws in `src/ui/mod.rs`
+  (removing dead `last_mouse_position` and skipping `Moved`/`Drag`/`Up` redraws).
+- Added `Options` `h`/`l` (`vim_keys`), `Help` `Home`/`End`/`g`/`G`, `Menu` wheel scrolling, and `DateTime<Tz>`
+  timezone formatting (`%+`/`%z`/`%Z`) in `src/ui/clock.rs`; regenerated `README.md` and `doc/pspp.1` blocks.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.

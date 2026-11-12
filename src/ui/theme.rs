@@ -1,5 +1,5 @@
-//! btop "Default" theme colors, 101-step gradients, the 256-color fallback, and btop `.theme`
-//! file loading.
+//! btop "Default" theme colors, 101-step gradients, 256-color / 16-color / `NO_COLOR` fallbacks,
+//! and btop `.theme` file loading.
 
 use std::fs;
 use std::path::Path;
@@ -7,6 +7,15 @@ use std::path::Path;
 use ratatui::style::Color;
 
 pub const GRADIENT_STEPS: usize = 101;
+
+/// Active terminal colour palette policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteMode {
+    Truecolor,
+    Indexed256,
+    Ansi16,
+    NoColor,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -27,6 +36,39 @@ impl Rgb {
         }
         let level = |v: u8| ((u16::from(v) + 25) / 51) as u8;
         16 + 36 * level(r) + 6 * level(g) + level(b)
+    }
+
+    fn to_ansi16(self) -> Color {
+        let Self(r, g, b) = self;
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let chroma = max - min;
+
+        if max < 128 {
+            return Color::DarkGray;
+        }
+        if chroma < 36 {
+            return if max >= 224 {
+                Color::White
+            } else {
+                Color::Gray
+            };
+        }
+        if r >= b && g >= b && r.abs_diff(g) < 48 {
+            Color::Yellow
+        } else if g > r && g >= b {
+            Color::Green
+        } else if r > g && r >= b {
+            if r >= 170 {
+                Color::LightRed
+            } else {
+                Color::Red
+            }
+        } else if max >= 224 {
+            Color::White
+        } else {
+            Color::Gray
+        }
     }
 }
 
@@ -234,13 +276,16 @@ pub struct Theme {
     pub inactive_fg: Rgb,
     pub meter_bg: Rgb,
     pub div_line: Rgb,
-    truecolor: bool,
+    mode: PaletteMode,
     usage_gradient: [Rgb; GRADIENT_STEPS],
 }
 
 impl Theme {
-    /// Detects truecolor support once from `COLORTERM`.
+    /// Detects palette mode once from `NO_COLOR` and `COLORTERM`.
     pub fn detect() -> Self {
+        if no_color_from_env(std::env::var("NO_COLOR").ok().as_deref()) {
+            return Self::build_with_mode(PaletteMode::NoColor, true, None);
+        }
         Self::new(truecolor_from_env(
             std::env::var("COLORTERM").ok().as_deref(),
         ))
@@ -253,13 +298,34 @@ impl Theme {
     /// Builds a theme: Default colours overlaid with `spec`. The theme's `main_bg` is only
     /// painted when `theme_background` is on (off keeps the terminal background).
     pub fn build(truecolor: bool, theme_background: bool, spec: Option<&ThemeSpec>) -> Self {
+        let mode = if truecolor {
+            PaletteMode::Truecolor
+        } else {
+            PaletteMode::Indexed256
+        };
+        Self::build_with_mode(mode, theme_background, spec)
+    }
+
+    /// Builds a theme for `mode`: Default colours overlaid with `spec` in `Truecolor` /
+    /// `Indexed256`, fixed 16-colour TTY semantics in `Ansi16`, and unstyled `Color::Reset` in
+    /// `NoColor`. `main_bg` is forced to `None` in `Ansi16` and `NoColor`.
+    pub fn build_with_mode(
+        mode: PaletteMode,
+        theme_background: bool,
+        spec: Option<&ThemeSpec>,
+    ) -> Self {
         let blank = ThemeSpec::default();
-        let spec = spec.unwrap_or(&blank);
+        let spec = match mode {
+            PaletteMode::Truecolor | PaletteMode::Indexed256 => spec.unwrap_or(&blank),
+            PaletteMode::Ansi16 | PaletteMode::NoColor => &blank,
+        };
         let start = spec.gradient_start.unwrap_or(Rgb(0x77, 0xca, 0x9b));
         let mid = spec.gradient_mid.unwrap_or(Rgb(0xcb, 0xc0, 0x6c));
         let end = spec.gradient_end.unwrap_or(Rgb(0xdc, 0x4c, 0x4c));
+        let allow_bg =
+            theme_background && matches!(mode, PaletteMode::Truecolor | PaletteMode::Indexed256);
         Self {
-            main_bg: spec.main_bg.filter(|_| theme_background),
+            main_bg: spec.main_bg.filter(|_| allow_bg),
             main_fg: spec.main_fg.unwrap_or(Rgb::grey(0xcc)),
             title: spec.title.unwrap_or(Rgb::grey(0xee)),
             hi_fg: spec.hi_fg.unwrap_or(Rgb(0xb5, 0x40, 0x40)),
@@ -268,17 +334,23 @@ impl Theme {
             inactive_fg: spec.inactive_fg.unwrap_or(Rgb::grey(0x40)),
             meter_bg: spec.meter_bg.unwrap_or(Rgb::grey(0x40)),
             div_line: spec.div_line.unwrap_or(Rgb::grey(0x30)),
-            truecolor,
+            mode,
             usage_gradient: build_gradient(start, mid, end),
         }
     }
 
-    /// Applies the truecolor / 256-color policy chosen at construction.
+    /// Active palette policy for this theme.
+    pub const fn mode(&self) -> PaletteMode {
+        self.mode
+    }
+
+    /// Applies the palette policy chosen at construction.
     pub fn color(&self, rgb: Rgb) -> Color {
-        if self.truecolor {
-            Color::Rgb(rgb.0, rgb.1, rgb.2)
-        } else {
-            Color::Indexed(rgb.to_indexed())
+        match self.mode {
+            PaletteMode::Truecolor => Color::Rgb(rgb.0, rgb.1, rgb.2),
+            PaletteMode::Indexed256 => Color::Indexed(rgb.to_indexed()),
+            PaletteMode::Ansi16 => rgb.to_ansi16(),
+            PaletteMode::NoColor => Color::Reset,
         }
     }
 
@@ -287,7 +359,16 @@ impl Theme {
     }
 
     pub fn usage_color(&self, pct: u8) -> Color {
-        self.color(self.usage_rgb(pct))
+        match self.mode {
+            PaletteMode::Truecolor | PaletteMode::Indexed256 => self.color(self.usage_rgb(pct)),
+            PaletteMode::Ansi16 => match pct {
+                0..=33 => Color::Green,
+                34..=66 => Color::Yellow,
+                67..=84 => Color::Red,
+                _ => Color::LightRed,
+            },
+            PaletteMode::NoColor => Color::Reset,
+        }
     }
 }
 
@@ -466,5 +547,121 @@ mod tests {
         // Greys use the 232+ ramp.
         assert_eq!(Rgb::grey(0x80).to_indexed(), 243);
         assert!((232..=255).contains(&Rgb::grey(0x40).to_indexed()));
+    }
+
+    fn is_ansi16(color: Color) -> bool {
+        matches!(
+            color,
+            Color::Black
+                | Color::Red
+                | Color::Green
+                | Color::Yellow
+                | Color::Blue
+                | Color::Magenta
+                | Color::Cyan
+                | Color::Gray
+                | Color::DarkGray
+                | Color::LightRed
+                | Color::LightGreen
+                | Color::LightYellow
+                | Color::LightBlue
+                | Color::LightMagenta
+                | Color::LightCyan
+                | Color::White
+        )
+    }
+
+    #[test]
+    fn ansi16_mode_uses_only_16_color_ansi_and_preserves_contrast() {
+        let spec = parse_btop_theme(SAMPLE_THEME);
+        for spec_opt in [None, Some(&spec)] {
+            let theme = Theme::build_with_mode(PaletteMode::Ansi16, true, spec_opt);
+            assert_eq!(theme.mode(), PaletteMode::Ansi16);
+            assert_eq!(theme.main_bg, None);
+
+            assert_eq!(theme.color(theme.selected_bg), Color::DarkGray);
+            assert_eq!(theme.color(theme.selected_fg), Color::White);
+            assert_ne!(
+                theme.color(theme.selected_bg),
+                theme.color(theme.selected_fg)
+            );
+            assert_eq!(theme.color(theme.title), Color::White);
+            assert_eq!(theme.color(theme.main_fg), Color::Gray);
+            assert_eq!(theme.color(theme.hi_fg), Color::LightRed);
+            assert_eq!(theme.color(theme.inactive_fg), Color::DarkGray);
+            assert_eq!(theme.color(theme.meter_bg), Color::DarkGray);
+            assert_eq!(theme.color(theme.div_line), Color::DarkGray);
+        }
+
+        let theme = Theme::build_with_mode(PaletteMode::Ansi16, true, None);
+        assert_eq!(theme.usage_color(0), Color::Green);
+        assert_eq!(theme.usage_color(33), Color::Green);
+        assert_eq!(theme.usage_color(34), Color::Yellow);
+        assert_eq!(theme.usage_color(66), Color::Yellow);
+        assert_eq!(theme.usage_color(67), Color::Red);
+        assert_eq!(theme.usage_color(84), Color::Red);
+        assert_eq!(theme.usage_color(85), Color::LightRed);
+        assert_eq!(theme.usage_color(100), Color::LightRed);
+        assert_eq!(theme.usage_color(250), Color::LightRed);
+
+        for pct in 0..=255u8 {
+            let c = theme.usage_color(pct);
+            assert!(is_ansi16(c), "pct {pct} produced {c:?}");
+        }
+
+        for r in (0..=255u8).step_by(17) {
+            for g in (0..=255u8).step_by(17) {
+                for b in (0..=255u8).step_by(17) {
+                    let c = theme.color(Rgb(r, g, b));
+                    assert!(is_ansi16(c), "Rgb({r},{g},{b}) produced {c:?}");
+                    assert!(
+                        matches!(
+                            c,
+                            Color::DarkGray
+                                | Color::Gray
+                                | Color::White
+                                | Color::Green
+                                | Color::Yellow
+                                | Color::Red
+                                | Color::LightRed
+                        ),
+                        "Rgb({r},{g},{b}) produced unexpected ANSI variant {c:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn no_color_mode_always_returns_reset_and_clears_main_bg() {
+        let spec = parse_btop_theme(SAMPLE_THEME);
+        let theme = Theme::build_with_mode(PaletteMode::NoColor, true, Some(&spec));
+        assert_eq!(theme.mode(), PaletteMode::NoColor);
+        assert_eq!(theme.main_bg, None);
+
+        for slot in [
+            theme.main_fg,
+            theme.title,
+            theme.hi_fg,
+            theme.selected_bg,
+            theme.selected_fg,
+            theme.inactive_fg,
+            theme.meter_bg,
+            theme.div_line,
+        ] {
+            assert_eq!(theme.color(slot), Color::Reset);
+        }
+
+        for pct in 0..=255u8 {
+            assert_eq!(theme.usage_color(pct), Color::Reset);
+        }
+
+        for r in (0..=255u8).step_by(51) {
+            for g in (0..=255u8).step_by(51) {
+                for b in (0..=255u8).step_by(51) {
+                    assert_eq!(theme.color(Rgb(r, g, b)), Color::Reset);
+                }
+            }
+        }
     }
 }

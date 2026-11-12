@@ -14,7 +14,7 @@ use crate::model::{AggMode, AggregateRow, MemKind, ProcTree, SortBy, VisibleRow}
 use crate::ui::clock;
 use crate::ui::graph::{GraphSymbols, History};
 use crate::ui::help;
-use crate::ui::theme::{self, Theme, TruecolorMode};
+use crate::ui::theme::{self, PaletteMode, Theme, TruecolorMode};
 
 pub const DEFAULT_UPDATE_MS: u64 = 2_000;
 pub const MIN_UPDATE_MS: u64 = 100;
@@ -124,8 +124,11 @@ impl GraphSymbolSetting {
     }
 
     pub fn resolve(self, force_tty: bool) -> GraphSymbols {
+        if force_tty {
+            return GraphSymbols::Tty;
+        }
         match self {
-            Self::Auto => GraphSymbols::detect(force_tty),
+            Self::Auto => GraphSymbols::detect(false),
             Self::Braille => GraphSymbols::Braille,
             Self::Block => GraphSymbols::Block,
             Self::Tty => GraphSymbols::Tty,
@@ -284,6 +287,13 @@ pub struct DisplayRow {
     pub toggle_marker: Option<Range<usize>>,
 }
 
+#[derive(Clone, Debug)]
+struct FilterSnapshot {
+    filter_committed: String,
+    expanded: HashSet<i32>,
+    selected_pid: Option<i32>,
+}
+
 pub struct App {
     /// The process forest; it owns the latest snapshot's records and system memory figures.
     pub tree: ProcTree,
@@ -313,7 +323,6 @@ pub struct App {
     pub should_quit: bool,
     pub last_tick_at: Instant,
     pub next_tick_at: Instant,
-    pub last_mouse_position: Option<(u16, u16)>,
 
     expanded: HashSet<i32>,
     rows: Vec<DisplayRow>,
@@ -348,6 +357,7 @@ pub struct App {
 
     filter_input: String,
     filter_committed: String,
+    filter_snapshot: Option<FilterSnapshot>,
     filter_visible: HashSet<i32>,
     filter_direct: HashSet<i32>,
 }
@@ -367,7 +377,9 @@ impl App {
     pub fn from_settings(settings: UiSettings) -> Self {
         let first = collect::take_snapshot(settings.mem_kind);
         let mut app = Self::with_snapshot(first, settings);
-        app.no_color = theme::no_color_from_env(std::env::var("NO_COLOR").ok().as_deref());
+        if theme::no_color_from_env(std::env::var("NO_COLOR").ok().as_deref()) {
+            app.set_no_color(true);
+        }
         app.collector = Some(Collector::spawn());
         app
     }
@@ -406,7 +418,6 @@ impl App {
             should_quit: false,
             last_tick_at: now,
             next_tick_at: next_tick_deadline(now, update_ms),
-            last_mouse_position: None,
             expanded,
             rows: Vec::new(),
             cursor: 0,
@@ -435,6 +446,7 @@ impl App {
             help_viewport_lines: 1,
             filter_input: String::new(),
             filter_committed: String::new(),
+            filter_snapshot: None,
             filter_visible: HashSet::new(),
             filter_direct: HashSet::new(),
         };
@@ -444,24 +456,49 @@ impl App {
         app
     }
 
-    /// Rebuilds the colour theme from `color_theme`, `truecolor` and `theme_background`.
+    pub(crate) fn set_no_color(&mut self, no_color: bool) {
+        self.no_color = no_color;
+        self.rebuild_theme();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_collector(&mut self, collector: Collector) {
+        self.collector = Some(collector);
+    }
+
+    /// Rebuilds the colour theme from `no_color`, `force_tty`, `color_theme`, `truecolor` and
+    /// `theme_background`.
     fn rebuild_theme(&mut self) {
         self.rebuild_theme_in(config::themes_dir().as_deref());
     }
 
     fn rebuild_theme_in(&mut self, dir: Option<&std::path::Path>) {
-        let truecolor = self
+        let mode = if self.no_color {
+            PaletteMode::NoColor
+        } else if self.force_tty {
+            PaletteMode::Ansi16
+        } else if self
             .truecolor
-            .resolve(std::env::var("COLORTERM").ok().as_deref());
-        let spec = theme::load_theme_spec(dir, &self.color_theme);
-        self.theme = Theme::build(truecolor, self.theme_background, spec.as_ref());
+            .resolve(std::env::var("COLORTERM").ok().as_deref())
+        {
+            PaletteMode::Truecolor
+        } else {
+            PaletteMode::Indexed256
+        };
+        let spec = match mode {
+            PaletteMode::Truecolor | PaletteMode::Indexed256 => {
+                theme::load_theme_spec(dir, &self.color_theme)
+            }
+            PaletteMode::Ansi16 | PaletteMode::NoColor => None,
+        };
+        self.theme = Theme::build_with_mode(mode, self.theme_background, spec.as_ref());
     }
 
     pub fn border_type(&self) -> ratatui::widgets::BorderType {
-        if self.rounded_corners {
-            ratatui::widgets::BorderType::Rounded
-        } else {
+        if self.force_tty || self.no_color || !self.rounded_corners {
             ratatui::widgets::BorderType::Plain
+        } else {
+            ratatui::widgets::BorderType::Rounded
         }
     }
 
@@ -504,7 +541,11 @@ impl App {
     }
 
     pub fn resolved_graph_symbols(&self) -> GraphSymbols {
-        self.graph_symbol.resolve(self.force_tty)
+        if self.no_color {
+            GraphSymbols::Tty
+        } else {
+            self.graph_symbol.resolve(self.force_tty)
+        }
     }
 
     /// Whether meters should use ASCII `'#'`/`'-'` glyphs instead of `'■'`.
@@ -595,8 +636,16 @@ impl App {
         );
     }
 
+    pub fn active_filter(&self) -> &str {
+        if self.mode == AppMode::FilterInput {
+            &self.filter_input
+        } else {
+            &self.filter_committed
+        }
+    }
+
     pub fn is_filter_active(&self) -> bool {
-        !self.filter_committed.is_empty()
+        !self.active_filter().is_empty()
     }
 
     pub fn filter_indicator(&self) -> Option<String> {
@@ -697,15 +746,17 @@ impl App {
     }
 
     /// Applies a finished background snapshot, if any. Called every loop iteration.
-    pub fn poll_snapshot(&mut self) {
+    /// Returns `true` when a snapshot was applied.
+    pub fn poll_snapshot(&mut self) -> bool {
         let Some((kind, snapshot)) = self.collector.as_mut().and_then(Collector::try_take) else {
-            return;
+            return false;
         };
         self.apply_snapshot(snapshot);
         // The metric changed while this snapshot was being collected: fetch the right one.
         if kind != self.mem_kind {
             self.request_refresh();
         }
+        true
     }
 
     pub(crate) fn apply_snapshot(&mut self, snapshot: Snapshot) {
@@ -713,6 +764,13 @@ impl App {
         self.tree = ProcTree::build(snapshot);
         let new_pids: HashSet<i32> = self.tree.procs().map(|proc_rec| proc_rec.pid).collect();
         self.expanded = remap_expanded_set(&self.expanded, &old_pids, &new_pids);
+        if let Some(filter_snap) = self.filter_snapshot.as_mut() {
+            filter_snap.expanded = remap_expanded_set(&filter_snap.expanded, &old_pids, &new_pids);
+        }
+        if self.mode == AppMode::FilterInput && !self.filter_input.is_empty() {
+            let filter = self.filter_input.clone();
+            self.expand_ancestors_for_filter(&filter);
+        }
 
         self.record_mem_sample();
         self.rebuild_rows();
@@ -741,7 +799,9 @@ impl App {
 
         if !self.vim_keys
             && !self.is_text_input_active()
-            && key_event.modifiers.is_empty()
+            && !key_event
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
             && matches!(key_event.code, KeyCode::Char('j' | 'k' | 'l' | 'g' | 'G'))
         {
             return;
@@ -756,49 +816,80 @@ impl App {
         }
     }
 
-    pub fn on_mouse(&mut self, mouse_event: MouseEvent) {
-        if self.disable_mouse {
-            return;
+    pub fn on_mouse(&mut self, mouse_event: MouseEvent) -> bool {
+        if self.disable_mouse
+            || matches!(
+                mouse_event.kind,
+                MouseEventKind::Moved
+                    | MouseEventKind::Drag(_)
+                    | MouseEventKind::Up(_)
+                    | MouseEventKind::ScrollLeft
+                    | MouseEventKind::ScrollRight
+            )
+        {
+            return false;
         }
-        self.last_mouse_position = Some((mouse_event.column, mouse_event.row));
 
         match self.mode {
             AppMode::Normal => match mouse_event.kind {
-                MouseEventKind::ScrollUp => self.move_cursor_by(-MOUSE_SCROLL_STEP),
-                MouseEventKind::ScrollDown => self.move_cursor_by(MOUSE_SCROLL_STEP),
+                MouseEventKind::ScrollUp => {
+                    self.move_cursor_by(-MOUSE_SCROLL_STEP);
+                    true
+                }
+                MouseEventKind::ScrollDown => {
+                    self.move_cursor_by(MOUSE_SCROLL_STEP);
+                    true
+                }
                 MouseEventKind::Down(MouseButton::Left) => {
                     if !self.handle_header_click(mouse_event.column, mouse_event.row) {
-                        self.handle_left_click(mouse_event.column, mouse_event.row)
+                        self.handle_left_click(mouse_event.column, mouse_event.row);
                     }
+                    true
                 }
-                _ => {}
+                _ => false,
             },
-            AppMode::FilterInput => {}
-            AppMode::Menu => {
-                if matches!(mouse_event.kind, MouseEventKind::Down(MouseButton::Left)) {
-                    self.handle_menu_click(mouse_event.column, mouse_event.row);
+            AppMode::FilterInput => false,
+            AppMode::Menu => match mouse_event.kind {
+                MouseEventKind::ScrollUp => {
+                    self.move_menu_selection(-1);
+                    true
                 }
-            }
+                MouseEventKind::ScrollDown => {
+                    self.move_menu_selection(1);
+                    true
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.handle_menu_click(mouse_event.column, mouse_event.row);
+                    true
+                }
+                _ => false,
+            },
             AppMode::Options => self.on_mouse_options(mouse_event),
             AppMode::Help => self.on_mouse_help(mouse_event),
         }
     }
 
-    fn on_mouse_options(&mut self, mouse_event: MouseEvent) {
+    fn on_mouse_options(&mut self, mouse_event: MouseEvent) -> bool {
         match mouse_event.kind {
-            MouseEventKind::ScrollUp => self.step_option_selection_clamped(-1),
-            MouseEventKind::ScrollDown => self.step_option_selection_clamped(1),
+            MouseEventKind::ScrollUp => {
+                self.step_option_selection_clamped(-1);
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                self.step_option_selection_clamped(1);
+                true
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 // Any click abandons an in-progress update_ms edit.
                 self.update_ms_editor = None;
                 self.clock_editor = None;
                 let (column, row) = (mouse_event.column, mouse_event.row);
                 let Some(overlay) = self.option_overlay_rect else {
-                    return;
+                    return true;
                 };
                 if !point_in_rect(overlay, column, row) {
                     self.mode = AppMode::Normal;
-                    return;
+                    return true;
                 }
                 let hit = self
                     .option_row_rects
@@ -812,23 +903,31 @@ impl App {
                         self.option_selected = idx;
                     }
                 }
+                true
             }
-            _ => {}
+            _ => false,
         }
     }
 
-    fn on_mouse_help(&mut self, mouse_event: MouseEvent) {
+    fn on_mouse_help(&mut self, mouse_event: MouseEvent) -> bool {
         match mouse_event.kind {
-            MouseEventKind::ScrollUp => self.move_help_scroll_by(-MOUSE_SCROLL_STEP),
-            MouseEventKind::ScrollDown => self.move_help_scroll_by(MOUSE_SCROLL_STEP),
+            MouseEventKind::ScrollUp => {
+                self.move_help_scroll_by(-MOUSE_SCROLL_STEP);
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                self.move_help_scroll_by(MOUSE_SCROLL_STEP);
+                true
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(overlay) = self.help_overlay_rect {
                     if !point_in_rect(overlay, mouse_event.column, mouse_event.row) {
                         self.mode = AppMode::Normal;
                     }
                 }
+                true
             }
-            _ => {}
+            _ => false,
         }
     }
 
@@ -961,6 +1060,20 @@ impl App {
             KeyCode::Char('+' | '=') => self.set_update_ms(self.update_ms.saturating_add(100)),
             KeyCode::Char('-' | '_') => self.set_update_ms(self.update_ms.saturating_sub(100)),
             KeyCode::Char('l') => self.expand_selected(),
+            KeyCode::Char('z' | '[')
+                if !key_event
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.collapse_all();
+            }
+            KeyCode::Char('Z' | ']')
+                if !key_event
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.expand_all();
+            }
             KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('/') => {
                 self.enter_filter_input();
             }
@@ -990,22 +1103,47 @@ impl App {
     fn on_key_filter_input(&mut self, key_event: KeyEvent) {
         match key_event.code {
             KeyCode::Esc => {
-                // btop-style: abandon the edit and keep the previously committed filter.
+                // btop-style: abandon the edit and restore the pre-filter snapshot.
+                if let Some(snapshot) = self.filter_snapshot.take() {
+                    self.filter_committed = snapshot.filter_committed;
+                    self.expanded = snapshot.expanded;
+                    self.selected_pid = snapshot.selected_pid;
+                }
                 self.filter_input = self.filter_committed.clone();
                 self.mode = AppMode::Normal;
+                self.rebuild_rows();
             }
             KeyCode::Enter => {
-                self.commit_filter_input();
+                self.filter_committed = self.filter_input.clone();
+                self.filter_snapshot = None;
                 self.mode = AppMode::Normal;
+                let filter = self.filter_committed.clone();
+                self.expand_ancestors_for_filter(&filter);
+                self.rebuild_rows();
             }
             KeyCode::Backspace => {
                 self.filter_input.pop();
+                self.apply_live_filter_edit();
+            }
+            KeyCode::Delete => {
+                self.filter_input.clear();
+                self.apply_live_filter_edit();
+            }
+            KeyCode::Char('u' | 'U') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.filter_input.clear();
+                self.apply_live_filter_edit();
+            }
+            KeyCode::Char('w' | 'W') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                delete_trailing_word(&mut self.filter_input);
+                self.apply_live_filter_edit();
             }
             KeyCode::Char(ch)
                 if !key_event.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key_event.modifiers.contains(KeyModifiers::ALT) =>
+                    && !key_event.modifiers.contains(KeyModifiers::ALT)
+                    && !ch.is_control() =>
             {
                 self.filter_input.push(ch);
+                self.apply_live_filter_edit();
             }
             _ => {}
         }
@@ -1037,6 +1175,24 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_option_selection(1),
             KeyCode::Left => self.adjust_selected_option(-1),
             KeyCode::Right => self.adjust_selected_option(1),
+            KeyCode::Char('h')
+                if self.vim_keys
+                    && !self.is_text_input_active()
+                    && !key_event
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.adjust_selected_option(-1);
+            }
+            KeyCode::Char('l')
+                if self.vim_keys
+                    && !self.is_text_input_active()
+                    && !key_event
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.adjust_selected_option(1);
+            }
             KeyCode::Enter => self.activate_selected_option(),
             _ => {}
         }
@@ -1098,6 +1254,22 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.move_help_scroll_by(1),
             KeyCode::PageUp => self.move_help_scroll_by(-(self.help_page_step() as isize)),
             KeyCode::PageDown => self.move_help_scroll_by(self.help_page_step() as isize),
+            KeyCode::Home => self.help_scroll = 0,
+            KeyCode::End => {
+                self.help_scroll = if self.help_content_lines == 0 {
+                    usize::MAX
+                } else {
+                    self.help_overflow()
+                };
+            }
+            KeyCode::Char('g') if self.vim_keys => self.help_scroll = 0,
+            KeyCode::Char('G') if self.vim_keys => {
+                self.help_scroll = if self.help_content_lines == 0 {
+                    usize::MAX
+                } else {
+                    self.help_overflow()
+                };
+            }
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => self.close_overlay(),
             _ => {}
         }
@@ -1177,7 +1349,10 @@ impl App {
             // Free text: only editable via Enter/click, never cycled.
             OptionKey::ClockFormat => {}
             OptionKey::BackgroundUpdate => self.background_update = !self.background_update,
-            OptionKey::ForceTty => self.force_tty = !self.force_tty,
+            OptionKey::ForceTty => {
+                self.force_tty = !self.force_tty;
+                self.rebuild_theme();
+            }
         }
     }
 
@@ -1233,7 +1408,8 @@ impl App {
 
     fn rebuild_rows(&mut self) {
         let aggregates = self.tree.aggregate(self.mem_kind, self.agg_mode);
-        if self.filter_committed.is_empty() {
+        let filter = self.active_filter();
+        if filter.is_empty() {
             self.filter_visible.clear();
             self.filter_direct.clear();
             let visible = self.tree.flatten_visible_sorted(
@@ -1244,11 +1420,11 @@ impl App {
             );
             self.rows = build_display_rows(&self.tree, &aggregates, &visible, &self.expanded);
         } else {
-            let match_set = self.tree.filter_match_set(&self.filter_committed);
-            self.filter_visible = match_set.visible.clone();
+            let match_set = self.tree.filter_match_set(filter);
+            self.filter_visible = match_set.visible;
             self.filter_direct = match_set.direct;
             // The real `expanded` set applies while filtering; matches' ancestors were expanded
-            // when the filter was committed, so matches start visible but can still be collapsed.
+            // when the filter was edited/committed, so matches start visible but can still be collapsed.
             let visible_all = self.tree.flatten_visible_sorted(
                 &self.expanded,
                 &aggregates,
@@ -1347,6 +1523,66 @@ impl App {
 
         self.expanded.insert(pid);
         self.rebuild_rows();
+    }
+
+    fn collapse_all(&mut self) {
+        let roots_with_children: HashSet<i32> = self
+            .tree
+            .root_children()
+            .iter()
+            .copied()
+            .filter(|&pid| !self.tree.child_pids(pid).is_empty())
+            .collect();
+
+        let has_expanded_visible_non_root = self.rows.iter().any(|row| {
+            self.tree.parent_pid(row.pid).is_some()
+                && !self.tree.child_pids(row.pid).is_empty()
+                && self.expanded.contains(&row.pid)
+        });
+        if has_expanded_visible_non_root {
+            self.expanded
+                .retain(|pid| roots_with_children.contains(pid));
+        } else {
+            self.expanded.clear();
+        }
+
+        if let Some(pid) = self.selected_pid {
+            self.selected_pid = Some(self.nearest_visible_ancestor(pid));
+        }
+        self.rebuild_rows();
+    }
+
+    fn expand_all(&mut self) {
+        self.expanded
+            .extend(self.tree.procs().map(|proc_rec| proc_rec.pid));
+        self.rebuild_rows();
+    }
+
+    fn nearest_visible_ancestor(&self, pid: i32) -> i32 {
+        let mut chain = vec![pid];
+        let hop_limit = self.tree.proc_count();
+        let mut current = self.tree.parent_pid(pid);
+        while let Some(parent) = current {
+            if chain.len() > hop_limit {
+                break;
+            }
+            chain.push(parent);
+            current = self.tree.parent_pid(parent);
+        }
+
+        let mut deepest_visible = *chain.last().unwrap_or(&pid);
+        for window in chain.windows(2).rev() {
+            let child = window[0];
+            let parent = window[1];
+            if !self.expanded.contains(&parent) {
+                break;
+            }
+            if self.is_filter_active() && !self.filter_visible.contains(&child) {
+                break;
+            }
+            deepest_visible = child;
+        }
+        deepest_visible
     }
 
     fn toggle_agg_mode(&mut self) {
@@ -1482,22 +1718,33 @@ impl App {
     }
 
     fn enter_filter_input(&mut self) {
+        self.filter_snapshot = Some(FilterSnapshot {
+            filter_committed: self.filter_committed.clone(),
+            expanded: self.expanded.clone(),
+            selected_pid: self.selected_pid,
+        });
         self.filter_input = self.filter_committed.clone();
         self.mode = AppMode::FilterInput;
     }
 
-    fn commit_filter_input(&mut self) {
-        self.filter_committed = self.filter_input.clone();
-        self.expand_ancestors_of_matches();
+    fn apply_live_filter_edit(&mut self) {
+        if let Some(snapshot) = &self.filter_snapshot {
+            self.expanded = snapshot.expanded.clone();
+            self.selected_pid = snapshot.selected_pid;
+        }
+        if !self.filter_input.is_empty() {
+            let filter = self.filter_input.clone();
+            self.expand_ancestors_for_filter(&filter);
+        }
         self.rebuild_rows();
     }
 
-    /// Expands every ancestor of a direct match so a freshly committed filter shows its matches.
-    fn expand_ancestors_of_matches(&mut self) {
-        if self.filter_committed.is_empty() {
+    /// Expands every ancestor of a direct match for `filter` so matches are visible.
+    fn expand_ancestors_for_filter(&mut self, filter: &str) {
+        if filter.is_empty() {
             return;
         }
-        let direct = self.tree.filter_match_set(&self.filter_committed).direct;
+        let direct = self.tree.filter_match_set(filter).direct;
         let hop_limit = self.tree.proc_count();
         for pid in direct {
             let mut current = self.tree.parent_pid(pid);
@@ -1517,13 +1764,16 @@ impl App {
     pub fn set_filter(&mut self, text: &str) {
         self.filter_input = text.to_owned();
         self.filter_committed = text.to_owned();
-        self.expand_ancestors_of_matches();
+        self.filter_snapshot = None;
+        let filter = self.filter_committed.clone();
+        self.expand_ancestors_for_filter(&filter);
         self.rebuild_rows();
     }
 
     fn clear_filter(&mut self) {
         self.filter_input.clear();
         self.filter_committed.clear();
+        self.filter_snapshot = None;
         self.rebuild_rows();
     }
 
@@ -1736,6 +1986,19 @@ fn is_quit_key(ch: char, modifiers: KeyModifiers) -> bool {
         lowered == 'c' || lowered == 'q'
     } else {
         lowered == 'q'
+    }
+}
+
+fn delete_trailing_word(text: &mut String) {
+    while text.chars().next_back().is_some_and(char::is_whitespace) {
+        text.pop();
+    }
+    while text
+        .chars()
+        .next_back()
+        .is_some_and(|ch| !ch.is_whitespace())
+    {
+        text.pop();
     }
 }
 
@@ -2519,19 +2782,21 @@ mod tests {
         }
     }
 
-    fn wait_for_snapshot(app: &mut App) {
+    fn wait_for_snapshot(app: &mut App) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
+        let mut applied = false;
         while app.collector.as_ref().is_some_and(|c| c.is_busy()) {
-            app.poll_snapshot();
+            applied |= app.poll_snapshot();
             assert!(Instant::now() < deadline, "worker never answered");
             std::thread::sleep(Duration::from_millis(2));
         }
-        app.poll_snapshot();
+        applied | app.poll_snapshot()
     }
 
     #[test]
     fn tick_requests_in_the_background_and_poll_applies_the_result() {
         let mut app = filter_app();
+        assert!(!app.poll_snapshot());
         assert_eq!(app.tree.proc_count(), 5);
         app.collector = Some(crate::collect::Collector::spawn_with(|_| {
             std::thread::sleep(Duration::from_millis(60));
@@ -2551,7 +2816,11 @@ mod tests {
         );
         assert!(app.poll_timeout(Instant::now()) <= Duration::from_millis(50));
 
-        wait_for_snapshot(&mut app);
+        assert!(wait_for_snapshot(&mut app));
+        assert!(
+            !app.poll_snapshot(),
+            "second poll with nothing ready is false"
+        );
         assert_eq!(app.tree.proc_count(), 2);
         let mut shown = pids(&app);
         shown.sort_unstable();
@@ -2614,5 +2883,375 @@ mod tests {
         assert!(app.expanded.contains(&6), "new pids start expanded");
         assert_eq!(app.mem_used(), 50);
         assert_eq!(app.mem_history.pushed_count(), 2);
+    }
+
+    #[test]
+    fn live_filter_updates_rows_per_keystroke_and_esc_restores_snapshot() {
+        let mut app = filter_app();
+        // Collapse `shell` (pid 2) so `target` (pid 3) starts hidden; select `other` (pid 4).
+        app.expanded.remove(&2);
+        app.rebuild_rows();
+        assert_eq!(pids(&app), vec![1, 2, 4, 5]);
+        app.select_pid(4);
+        assert_eq!(app.selected_pid, Some(4));
+
+        press(&mut app, KeyCode::Char('f'));
+        assert_eq!(app.mode, AppMode::FilterInput);
+        assert_eq!(app.active_filter(), "");
+        assert!(!app.is_filter_active());
+
+        // Live filtering expands ancestors of direct matches before Enter is pressed.
+        type_text(&mut app, "tar");
+        assert_eq!(app.active_filter(), "tar");
+        assert!(app.is_filter_active());
+        assert_eq!(pids(&app), vec![1, 2, 3]);
+        assert!(app.is_direct_filter_match(3));
+        assert!(app.is_context_filter_match(2));
+
+        // Backspacing back to empty resets `expanded` to the pre-filter snapshot (`2` folded).
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        assert_eq!(app.active_filter(), "");
+        assert!(!app.is_filter_active());
+        assert_eq!(pids(&app), vec![1, 2, 4, 5]);
+
+        // Ctrl-W deletes trailing whitespace + trailing word one word at a time.
+        type_text(&mut app, "alpha beta  ");
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(app.filter_input, "alpha ");
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert_eq!(app.filter_input, "");
+
+        // Ctrl-U clears the filter input and refreshes rows live.
+        type_text(&mut app, "stray");
+        assert_eq!(pids(&app), vec![5]);
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.filter_input, "");
+        assert_eq!(pids(&app), vec![1, 2, 4, 5]);
+
+        // Delete also clears the filter input.
+        type_text(&mut app, "target");
+        assert_eq!(pids(&app), vec![1, 2, 3]);
+        press(&mut app, KeyCode::Delete);
+        assert_eq!(app.filter_input, "");
+        assert_eq!(pids(&app), vec![1, 2, 4, 5]);
+
+        // Recovering from a temporary zero-match typo via Backspace or Ctrl-U re-selects pid 4.
+        type_text(&mut app, "othex");
+        assert!(pids(&app).is_empty());
+        assert_eq!(app.selected_pid, None);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.filter_input, "othe");
+        assert_eq!(app.selected_pid, Some(4));
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(app.selected_pid, Some(4));
+
+        type_text(&mut app, "no-such-proc");
+        assert!(pids(&app).is_empty());
+        assert_eq!(app.selected_pid, None);
+        app.on_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(pids(&app), vec![1, 2, 4, 5]);
+        assert_eq!(app.selected_pid, Some(4));
+
+        // Esc after a zero-match edit restores committed filter, expanded set, and selected_pid.
+        type_text(&mut app, "no-such-proc");
+        assert!(pids(&app).is_empty());
+        assert_eq!(app.selected_pid, None);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, AppMode::Normal);
+        assert!(!app.is_filter_active());
+        assert_eq!(pids(&app), vec![1, 2, 4, 5]);
+        assert_eq!(app.selected_pid, Some(4));
+    }
+
+    #[test]
+    fn apply_snapshot_while_filtering_remaps_filter_snapshot_expanded() {
+        let mut app = filter_app();
+        app.expanded.remove(&2);
+        app.rebuild_rows();
+
+        press(&mut app, KeyCode::Char('f'));
+        type_text(&mut app, "target");
+        assert!(app.expanded.contains(&2), "live filter expanded ancestor 2");
+
+        let mut next = Snapshot {
+            procs: filter_app().tree.procs().cloned().collect(),
+            total_mem: 100,
+            used_mem: 50,
+        };
+        next.procs.push(ProcRec {
+            pid: 6,
+            ppid: 5,
+            comm: "child_of_stray".into(),
+            mem: MemSet {
+                rss: Some(10),
+                vsz: Some(10),
+                ..MemSet::default()
+            },
+        });
+        app.apply_snapshot(next);
+        assert_eq!(pids(&app), vec![1, 2, 3]);
+
+        // Cancelling FilterInput keeps pid 2 collapsed while keeping new pid 6 expanded.
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.expanded.contains(&2));
+        assert!(app.expanded.contains(&6));
+    }
+
+    #[test]
+    fn collapse_all_and_expand_all_fold_non_roots_then_roots_and_preserve_parent_selection() {
+        // Multi-root tree where root 0 is a leaf root with the largest memory (row 0),
+        // root 1 has two 2-level subtrees (10 -> 11 -> 12, 20 -> 21), and root 30 has child 31.
+        let mut app = synthetic_app(&[
+            (0, 0, "kernel_task", 5_000),
+            (1, 0, "launchd", 10),
+            (10, 1, "edge", 400),
+            (11, 10, "helper", 300),
+            (12, 11, "worker", 200),
+            (20, 1, "code", 150),
+            (21, 20, "tsserver", 100),
+            (30, 0, "daemon", 50),
+            (31, 30, "daemon_worker", 40),
+        ]);
+        assert_eq!(pids(&app)[0], 0);
+        app.select_pid(21);
+        assert_eq!(app.selected_pid, Some(21));
+
+        // First `z`: folds non-root subtrees (`expanded == {1, 30}`) and moves selection from
+        // `tsserver` (21) onto its folded parent `code` (20) rather than row 0 (`kernel_task`).
+        plain_press(&mut app, 'z');
+        assert_eq!(app.expanded, [1, 30].into_iter().collect());
+        assert_eq!(pids(&app), vec![0, 1, 10, 20, 30, 31]);
+        assert_eq!(app.selected_pid, Some(20));
+
+        // Second `z`: folds roots too (`expanded` cleared) and moves selection from `code` (20)
+        // onto its folded root `launchd` (1), still not jumping to row 0 (`kernel_task`).
+        plain_press(&mut app, 'z');
+        assert!(app.expanded.is_empty());
+        assert_eq!(pids(&app), vec![0, 1, 30]);
+        assert_eq!(app.selected_pid, Some(1));
+
+        // Third `z`: monotonic — never re-expands collapsed roots.
+        plain_press(&mut app, 'z');
+        assert!(app.expanded.is_empty());
+        assert_eq!(pids(&app), vec![0, 1, 30]);
+
+        // `Z` expands every node again.
+        plain_press(&mut app, 'Z');
+        assert_eq!(app.rows().len(), 9);
+
+        // `[` and `]` aliases behave identically.
+        app.select_pid(12);
+        plain_press(&mut app, '[');
+        assert_eq!(app.selected_pid, Some(10));
+        plain_press(&mut app, '[');
+        assert_eq!(app.selected_pid, Some(1));
+        plain_press(&mut app, ']');
+        assert_eq!(app.rows().len(), 9);
+
+        // Background `apply_snapshot` adding a new leaf process after first `z` must not block
+        // the second `z` from folding roots, nor cause a third `z` to re-expand roots.
+        plain_press(&mut app, 'z');
+        assert_eq!(app.expanded, [1, 30].into_iter().collect());
+        let mut procs: Vec<ProcRec> = app.tree.procs().cloned().collect();
+        procs.push(ProcRec {
+            pid: 32,
+            ppid: 30,
+            comm: "daemon_leaf".into(),
+            mem: MemSet {
+                rss: Some(25),
+                vsz: Some(25),
+                ..MemSet::default()
+            },
+        });
+        app.apply_snapshot(Snapshot {
+            procs,
+            total_mem: 10_000,
+            used_mem: 6_000,
+        });
+        assert!(app.expanded.contains(&32));
+        plain_press(&mut app, 'z');
+        assert!(app.expanded.is_empty());
+        assert_eq!(pids(&app), vec![0, 1, 30]);
+        plain_press(&mut app, 'z');
+        assert!(app.expanded.is_empty());
+
+        // On a 2-level tree, the first `z` immediately folds roots instead of being a no-op.
+        let mut two_level = synthetic_app(&[(1, 0, "launchd", 100), (2, 1, "leaf", 50)]);
+        plain_press(&mut two_level, 'z');
+        assert!(two_level.expanded.is_empty());
+        assert_eq!(pids(&two_level), vec![1]);
+    }
+
+    #[test]
+    fn force_tty_and_no_color_override_symbols_borders_and_palette_mode() {
+        use crate::ui::graph::GraphSymbols;
+        use crate::ui::theme::{PaletteMode, TruecolorMode};
+        use ratatui::widgets::BorderType;
+
+        for setting in [
+            GraphSymbolSetting::Auto,
+            GraphSymbolSetting::Braille,
+            GraphSymbolSetting::Block,
+            GraphSymbolSetting::Tty,
+        ] {
+            assert_eq!(setting.resolve(true), GraphSymbols::Tty, "{setting:?}");
+        }
+
+        let mut app = App::with_snapshot(
+            Snapshot {
+                procs: Vec::new(),
+                total_mem: 100,
+                used_mem: 50,
+            },
+            UiSettings {
+                graph_symbol: GraphSymbolSetting::Braille,
+                rounded_corners: true,
+                truecolor: TruecolorMode::On,
+                force_tty: false,
+                ..UiSettings::default()
+            },
+        );
+        assert_eq!(app.resolved_graph_symbols(), GraphSymbols::Braille);
+        assert_eq!(app.border_type(), BorderType::Rounded);
+        assert_eq!(app.theme.mode(), PaletteMode::Truecolor);
+
+        // Toggling `ForceTty` in Options switches theme to Ansi16, borders to Plain, and symbols
+        // to Tty without mutating `rounded_corners` or `graph_symbol`.
+        app.mode = AppMode::Options;
+        app.option_selected = OPTION_KEYS
+            .iter()
+            .position(|k| *k == OptionKey::ForceTty)
+            .expect("force_tty");
+        press(&mut app, KeyCode::Right);
+        assert!(app.force_tty);
+        assert!(app.rounded_corners);
+        assert_eq!(app.graph_symbol, GraphSymbolSetting::Braille);
+        assert_eq!(app.resolved_graph_symbols(), GraphSymbols::Tty);
+        assert!(app.ascii_meters());
+        assert_eq!(app.border_type(), BorderType::Plain);
+        assert_eq!(app.theme.mode(), PaletteMode::Ansi16);
+
+        // `set_no_color(true)` takes highest precedence (`NoColor` palette, `Tty` symbols, `Plain`).
+        app.set_no_color(true);
+        assert_eq!(app.theme.mode(), PaletteMode::NoColor);
+        assert_eq!(app.resolved_graph_symbols(), GraphSymbols::Tty);
+        assert_eq!(app.border_type(), BorderType::Plain);
+
+        press(&mut app, KeyCode::Left); // force_tty = false while no_color remains true
+        assert!(!app.force_tty);
+        assert_eq!(app.theme.mode(), PaletteMode::NoColor);
+        assert_eq!(app.resolved_graph_symbols(), GraphSymbols::Tty);
+        assert_eq!(app.border_type(), BorderType::Plain);
+        assert!(app.rounded_corners);
+
+        app.set_no_color(false);
+        assert_eq!(app.theme.mode(), PaletteMode::Truecolor);
+        assert_eq!(app.resolved_graph_symbols(), GraphSymbols::Braille);
+        assert_eq!(app.border_type(), BorderType::Rounded);
+    }
+
+    #[test]
+    fn overlay_navigation_supports_options_hl_help_home_end_gg_and_menu_wheel() {
+        use super::MenuButton;
+
+        let mut app = filter_app();
+        app.mode = AppMode::Options;
+        app.option_selected = OPTION_KEYS
+            .iter()
+            .position(|k| *k == OptionKey::UpdateMs)
+            .expect("update_ms");
+        let base = app.update_ms;
+        plain_press(&mut app, 'l');
+        assert_eq!(app.update_ms, base + 100);
+        plain_press(&mut app, 'h');
+        assert_eq!(app.update_ms, base);
+
+        // Ctrl-H/Ctrl-L and Alt-H/Alt-L must not step options.
+        for mods in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            app.on_key(KeyEvent::new(KeyCode::Char('l'), mods));
+            app.on_key(KeyEvent::new(KeyCode::Char('h'), mods));
+            assert_eq!(app.update_ms, base);
+        }
+
+        // Coalesced `h` + `G` before the first Help frame (`help_content_lines == 0`) latches to
+        // `usize::MAX` and clamps to `help_overflow()` once `set_help_scroll_metrics` runs.
+        app.mode = AppMode::Normal;
+        plain_press(&mut app, 'h');
+        assert_eq!(app.mode, AppMode::Help);
+        assert_eq!(app.help_content_lines, 0);
+        app.on_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.help_scroll(), usize::MAX);
+        app.set_help_scroll_metrics(100, 15);
+        assert_eq!(app.help_scroll(), 85);
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.help_scroll(), 0);
+
+        // With `vim_keys = false`, `h`/`l` are inert in Options, while `h` in Normal still opens Help.
+        app.mode = AppMode::Options;
+        app.vim_keys = false;
+        plain_press(&mut app, 'l');
+        plain_press(&mut app, 'h');
+        assert_eq!(app.update_ms, base);
+        app.mode = AppMode::Normal;
+        plain_press(&mut app, 'h');
+        assert_eq!(app.mode, AppMode::Help);
+
+        // Help supports Home/End regardless of vim_keys, and g/G when vim_keys is true.
+        app.set_help_scroll_metrics(100, 15);
+        assert_eq!(app.help_overflow(), 85);
+        app.on_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.help_scroll(), 0, "G ignored when vim_keys is false");
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.help_scroll(), 85);
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.help_scroll(), 0);
+
+        app.vim_keys = true;
+        app.on_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT));
+        assert_eq!(app.help_scroll(), 85);
+        plain_press(&mut app, 'g');
+        assert_eq!(app.help_scroll(), 0);
+
+        // Menu handles mouse wheel scrolling and `on_mouse` reports false for motion/drag/up/hscroll.
+        app.mode = AppMode::Menu;
+        assert_eq!(app.menu_selected(), MenuButton::Options);
+        assert!(app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(app.menu_selected(), MenuButton::Help);
+        wheel(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.menu_selected(), MenuButton::Quit);
+        wheel(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.menu_selected(), MenuButton::Help);
+
+        for noop_kind in [
+            MouseEventKind::Moved,
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::ScrollLeft,
+            MouseEventKind::ScrollRight,
+        ] {
+            assert!(
+                !app.on_mouse(MouseEvent {
+                    kind: noop_kind,
+                    column: 5,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                "{noop_kind:?} must not mark frame dirty"
+            );
+        }
+        app.disable_mouse = true;
+        assert!(!app.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
     }
 }

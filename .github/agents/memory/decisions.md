@@ -230,3 +230,22 @@ Per-agent models set in profile frontmatter:
 - **JSON schema enriched with `own_approximate` and `total_approximate`**: Rows carry `own_approximate`
   alongside aggregated `approximate`, and the top-level object carries `total_approximate`. `--pid` walks
   `ProcTree::child_pids` directly so subtree queries match `ProcTree` root/cycle semantics.
+
+## 2026-11-12 — M28 (live filter, collapse/expand-all, `force_tty`/`NO_COLOR` fidelity, event coalescing)
+
+- **Filter input updates live per keystroke** (reverses M18's commit-only filter editing): Entering
+  `FilterInput` snapshots `(filter_committed, expanded, selected_pid)`; every edit (`Char`, `Backspace`,
+  `Ctrl-W`, `Delete`/`Ctrl-U`) resets `expanded` from the snapshot, expands current match ancestors, and
+  rebuilds rows live; `Enter` commits and `Esc` restores the full snapshot.
+- **Collapse-all / expand-all shortcuts (`z`/`[`, `Z`/`]`)**: Pressing `z` or `[` in Normal mode folds all
+  visible non-root subtrees (`roots_with_children`) while keeping top-level children visible (and folds
+  roots on a second press, never re-expanding already-collapsed roots), walking `selected_pid` up to its
+  nearest visible ancestor; `Z` or `]` expands all nodes.
+- **`force_tty` & `NO_COLOR` full fidelity** (extends M20): `force_tty = true` or non-empty `NO_COLOR`
+  overrides `GraphSymbolSetting` (`auto`/`braille`/`block` → `Tty`), forces square borders (`BorderType::Plain`),
+  and switches `Theme` to `PaletteMode::Ansi16` (`force_tty`, 16-colour ANSI only) or `PaletteMode::NoColor`
+  (`NO_COLOR`, `Color::Reset` + `Modifier::REVERSED` selection) without mutating persisted `UiSettings`.
+- **Coalesced event loop & overlay/clock polish**: `ui::run_tui` drains up to 64 zero-timeout queued events
+  per iteration and redraws only when `dirty` (ignoring `MouseEventKind::{Moved, Drag, Up, ScrollLeft, ScrollRight}`);
+  `Options` supports `h`/`l` under `vim_keys`, `Help` supports `Home`/`End`/`g`/`G`, `Menu` supports mouse
+  wheel, and `clock.rs` formats `DateTime<Tz>` so `%+`, `%z`, and `%Z` work.

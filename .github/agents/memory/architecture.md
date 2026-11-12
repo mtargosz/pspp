@@ -41,22 +41,26 @@ src/
                        plain aligned table + JSON output wrapper { mem, agg, rows, total }
   ui/
     mod.rs           — `run_tui`: terminal lifecycle guard (alt screen/raw/mouse/cursor),
-                       panic hook restoration, crossterm event loop + tick scheduling; returns
+                       panic hook restoration, coalesced zero-timeout event batching (up to 64/frame),
+                       dirty-only redraws (no-op mouse motion skipped), tick scheduling; returns
                        final `UiSettings` so main can persist them
     app.rs           — `App` state: tree (owns the snapshot), collector, agg mode, mem kind, update timing, base10,
                        save_on_exit, graph symbol selection, app modes
-                       (Normal/FilterInput/Menu/Options/Help), tree expand/collapse state,
-                       sorting + process filter state, selection+scroll, key/mouse handlers,
+                       (Normal/FilterInput/Menu/Options/Help), tree expand/collapse state (`z/[` collapse
+                       non-roots then roots, `Z/]` expand all), sorting + live process filter state
+                       (`FilterSnapshot`), selection+scroll, key/mouse handlers (`bool` dirty flags),
                        periodic refresh on ticks, row hit-test + menu hit-test caches
     draw.rs          — rounded/square-border frame, interactive process tree table (COMM, PID sized from the
                        largest pid, OWN, Σ, %, CHILDREN, meter 12..=30 cells scaling with width), status+hint
                        bars, gradient-colored memory columns, btop-style meters and tree glyphs, Esc menu,
-                       scrolling options overlay, help overlay with scrollbar; `screens` TestBackend tests
+                       scrolling options overlay, help overlay with scrollbar, `Modifier::REVERSED` selection
+                       under `NO_COLOR`; `screens` TestBackend tests
     help.rs          — static help content: `key_sections()` tables (also the source of the README/man
                        key tables), memory explanations, wrapped/styled line builder, scroll clamp helper
-    theme.rs         — named theme colors + 101-step gradients, 256-color fallback, `TruecolorMode`,
+    theme.rs         — `PaletteMode { Truecolor, Indexed256, Ansi16, NoColor }`, named theme colors + 101-step
+                       gradients, 256-color/ANSI-16/no-color fallbacks, `TruecolorMode`, `no_color_from_env`,
                        btop `.theme` parser (`ThemeSpec`, `parse_btop_theme`, `discover_themes`, `load_theme_spec`)
-    clock.rs         — strftime top-border clock (`format_clock_at/now`, chrono, validated formats)
+    clock.rs         — strftime top-border clock (`format_clock_at/now` over `DateTime<Tz>`, supporting `%+`/`%z`/`%Z`)
     graph.rs         — `History` ring buffer, braille/block/tty graph rendering, ■ meter spans
   docsync.rs         — test-only: keeps generated README/man blocks in sync (`PSPP_UPDATE_DOCS=1` rewrites)
   config.rs          — config load/save (`$PSPP_CONFIG_DIR/pspp.conf` override else
@@ -133,15 +137,20 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - `Rgb(u8,u8,u8)`: `grey(v)`.
 - `build_gradient(start, mid, end) -> [Rgb; 101]` — two 50-step linear passes, index = percent.
 - `truecolor_from_env(Option<&str>)` — `COLORTERM` = `truecolor`|`24bit`.
-- `Theme::{detect(), new(truecolor: bool)}` (the latter for tests/overrides); `App.theme` holds it.
-  - Fields: `main_bg: Option<Rgb>` (None = transparent), `main_fg`, `title`, `hi_fg`, `selected_bg`,
-    `selected_fg`, `inactive_fg`, `meter_bg`, `div_line`.
-  - `color(Rgb) -> Color` (truecolor `Color::Rgb`, else `Color::Indexed` via grey ramp / 6×6×6 cube).
+- `Theme::{detect(), new(truecolor: bool), build_with_mode(mode, theme_background, spec)}`; `App.theme` holds it.
+  - `PaletteMode { Truecolor, Indexed256, Ansi16, NoColor }` (`NoColor` takes precedence when `NO_COLOR` is non-empty;
+    `Ansi16` is used when `force_tty = true`).
+  - Fields: `main_bg: Option<Rgb>` (None = transparent; forced None in `Ansi16`/`NoColor`), `main_fg`, `title`,
+    `hi_fg`, `selected_bg`, `selected_fg`, `inactive_fg`, `meter_bg`, `div_line`.
+  - `color(Rgb) -> Color` (truecolor `Color::Rgb`, `Color::Indexed` via grey ramp / 6×6×6 cube, 16-colour ANSI
+    variants in `Ansi16`, or `Color::Reset` in `NoColor`).
   - `usage_rgb/usage_color(pct)` (pct clamped to 100); the graph uses the same gradient (btop default).
 
 ## Tree table UI (milestone 8)
 
 - Expansion model: `HashSet<pid>` of expanded nodes; default is **all nodes expanded** (btop-like tree mode).
+  - `z`/`[` folds all visible non-root subtrees (`roots_with_children`) on the first press and folds roots on
+    the second press (walking `selected_pid` up to its nearest visible ancestor); `Z`/`]` expands all nodes.
   - On refresh, existing collapsed/expanded choices are preserved for surviving pids.
   - New pids default to expanded.
 - Selection model: remembered `selected_pid` + `(cursor, scroll)` indices over visible rows.
@@ -216,7 +225,7 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 - App mode enum now includes `FilterInput` (`AppMode::{Normal, FilterInput, Menu, Options, Help}`).
 - Help overlay:
   - centered rounded box titled `" help "` with scrollable content
-  - scroll keys: `↑/↓/j/k/PgUp/PgDn`/wheel; close: `Esc`/`q`/click outside; scrollbar when overflowing
+  - scroll keys: `↑/↓/j/k/PgUp/PgDn/Home/End/g/G`/wheel; close: `Esc`/`q`/click outside; scrollbar when overflowing
   - sections rendered from `ui/help.rs` as styled `Line`s:
     - key bindings grouped by navigation/tree/display/menu
     - mouse actions
@@ -224,10 +233,12 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
       availability and approximate (`~`) notes
     - rollup vs flat aggregation summary
 - Filter behavior:
-  - `f` or `/` enters input mode with status prompt `filter: <input>█`
-  - input accepts printable characters (including spaces), `Backspace`, `Enter`, `Esc`
-  - `Enter` commits (and expands ancestors of matches); `Esc` restores the previously committed filter;
-    active filters show `filter: ...`; `c` clears
+  - `f` or `/` snapshots `(filter_committed, expanded, selected_pid)` and enters input mode with status prompt
+    `filter: <input>█`
+  - input accepts printable characters (including spaces), `Backspace`, `Ctrl-W`, `Delete`/`Ctrl-U`, `Enter`, `Esc`,
+    rebuilding the filtered tree live on every edit (resetting `expanded` from the snapshot and expanding match ancestors)
+  - `Enter` commits; `Esc` restores the full snapshot (`filter_committed`, `expanded`, `selected_pid`);
+    active filters show `filter: ...`; `c` in Normal mode clears
   - the filtered tree uses the real `expanded` set (collapse/expand work while filtering)
   - matching is case-insensitive substring on `comm`
   - retained rows are matching nodes plus ancestors of matching descendants (context preserved)

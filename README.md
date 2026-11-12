@@ -64,7 +64,7 @@ A plain-text capture of the TUI, rendered by the test suite from a synthetic pro
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│↑/↓ j/k PgUp/PgDn  ←/→  Space/Enter  e agg  m mem  s sort  S/r rev  f// filter  h/F1 help         │
+│↑/↓ j/k PgUp/PgDn  ←/→  Space/Enter  z/Z fold  e agg  m mem  s sort  S/r rev  f// filter          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -106,6 +106,8 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `Space or Enter` | Toggle expand/collapse on selected node (also while filtering). |
 | `←` | Collapse selected node, or select parent. |
 | `→, l` | Expand selected node (l needs vim_keys). |
+| `z / [` | Collapse all non-root subtrees (again: roots too). |
+| `Z / ]` | Expand all nodes. |
 
 #### Display & Filter
 
@@ -115,10 +117,12 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `m/M` | Cycle memory type. |
 | `s` | Cycle sort key. |
 | `S or r/R` | Reverse sort direction. |
-| `Filter input` | Type any characters (including spaces). |
+| `Filter input` | Type any characters (including spaces) to filter live and expand match ancestors. |
 | `Backspace` | Delete one character in filter input. |
-| `Enter` | Commit the filter and expand the ancestors of every match. |
-| `Esc` | Leave filter input and restore the previously committed filter. |
+| `Delete / Ctrl-U` | Clear the filter input. |
+| `Ctrl-W` | Delete previous word in filter input. |
+| `Enter` | Keep the filter and return to the table. |
+| `Esc` | Cancel filter edit and restore the prior filter and tree. |
 
 #### Menu / Overlays
 
@@ -128,11 +132,12 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `Menu: Enter/Space` | Activate selected menu button. |
 | `Menu: Esc/q/Q` | Close menu. |
 | `Options: ↑/↓, j/k` | Select option row. |
-| `Options: ←/→` | Change/toggle selected option. |
+| `Options: ← / →, h / l` | Change/toggle selected option (h/l need vim_keys). |
 | `Options: Enter` | Edit update_ms or advance value. |
 | `Options: Esc/q/Q` | Close options and return to menu. |
 | `update_ms / clock_format editor` | Type to edit; Backspace deletes; Enter commits; Esc cancels. |
-| `Help: ↑/↓/j/k/PgUp/PgDn` | Scroll help text. Esc/q/Q closes. |
+| `Help: ↑/↓, j/k, PgUp/PgDn` | Scroll help text (j/k need vim_keys). |
+| `Help: Home / End, g / G` | Jump to top/bottom of help (g/G need vim_keys). Esc/q/Q closes. |
 
 ### Mouse Support
 
@@ -143,7 +148,7 @@ Every operation is accessible from the keyboard (matching the in-app **Help** ov
 | `Left click [+]/[-]` | Expand/collapse node. |
 | `Double click row` | Expand/collapse node. |
 | `Click column header` | Sort by that column; click the active column again to reverse. |
-| `Menu click` | Click button to activate; click outside to close menu. |
+| `Menu: click / wheel` | Click button to activate; wheel cycles menu buttons; click outside to close menu. |
 | `Options: click / wheel` | Click row to select, click the selected row to edit/advance; wheel moves; click outside closes. |
 | `Help: wheel / click` | Wheel scrolls; click outside closes. |
 <!-- END GENERATED: key-tables -->

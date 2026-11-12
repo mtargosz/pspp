@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 use crate::ui::theme::Theme;
@@ -285,6 +285,12 @@ pub fn meter_spans_styled(
 
     if selected {
         let selected_bg = theme.color(theme.selected_bg);
+        let raw_empty = theme.color(theme.meter_bg);
+        let empty_fg = if raw_empty == selected_bg && raw_empty != Color::Reset {
+            Color::Gray
+        } else {
+            raw_empty
+        };
         let mut spans = Vec::new();
         if filled > 0 {
             spans.push(Span::styled(
@@ -297,9 +303,7 @@ pub fn meter_spans_styled(
         if filled < width {
             spans.push(Span::styled(
                 empty_ch.to_string().repeat(width - filled),
-                Style::default()
-                    .fg(theme.color(theme.meter_bg))
-                    .bg(selected_bg),
+                Style::default().fg(empty_fg).bg(selected_bg),
             ));
         }
         return spans;
@@ -537,5 +541,20 @@ mod tests {
             assert_eq!(ascii_text(50, selected), "##--");
             assert_eq!(ascii_text(100, selected), "####");
         }
+
+        // In Ansi16 (`force_tty`), `meter_bg` and `selected_bg` both map to `DarkGray`; selected
+        // empty cells step up to `Gray` so `'-'` stays visible while `NoColor` stays `Reset`.
+        let ansi_theme = Theme::build_with_mode(crate::ui::theme::PaletteMode::Ansi16, false, None);
+        let ansi_sel = meter_spans_styled(&ansi_theme, 4, 50, 100, true, true);
+        assert_eq!(ansi_sel.len(), 2);
+        assert_eq!(ansi_sel[0].style.fg, Some(Color::White));
+        assert_eq!(ansi_sel[0].style.bg, Some(Color::DarkGray));
+        assert_eq!(ansi_sel[1].style.fg, Some(Color::Gray));
+        assert_eq!(ansi_sel[1].style.bg, Some(Color::DarkGray));
+
+        let nc_theme = Theme::build_with_mode(crate::ui::theme::PaletteMode::NoColor, false, None);
+        let nc_sel = meter_spans_styled(&nc_theme, 4, 50, 100, true, true);
+        assert_eq!(nc_sel[1].style.fg, Some(Color::Reset));
+        assert_eq!(nc_sel[1].style.bg, Some(Color::Reset));
     }
 }

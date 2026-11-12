@@ -34,38 +34,48 @@ const NAVIGATION_KEYS: [(&str, &str); 11] = [
     ("Esc", "Open main menu."),
 ];
 
-const TREE_KEYS: [(&str, &str); 3] = [
+const TREE_KEYS: [(&str, &str); 5] = [
     (
         "Space or Enter",
         "Toggle expand/collapse on selected node (also while filtering).",
     ),
     ("←", "Collapse selected node, or select parent."),
     ("→, l", "Expand selected node (l needs vim_keys)."),
+    (
+        "z / [",
+        "Collapse all non-root subtrees (again: roots too).",
+    ),
+    ("Z / ]", "Expand all nodes."),
 ];
 
-const DISPLAY_KEYS: [(&str, &str); 8] = [
+const DISPLAY_KEYS: [(&str, &str); 10] = [
     ("e/E", "Toggle aggregation mode: rollup/flat."),
     ("m/M", "Cycle memory type."),
     ("s", "Cycle sort key."),
     ("S or r/R", "Reverse sort direction."),
-    ("Filter input", "Type any characters (including spaces)."),
-    ("Backspace", "Delete one character in filter input."),
     (
-        "Enter",
-        "Commit the filter and expand the ancestors of every match.",
+        "Filter input",
+        "Type any characters (including spaces) to filter live and expand match ancestors.",
     ),
+    ("Backspace", "Delete one character in filter input."),
+    ("Delete / Ctrl-U", "Clear the filter input."),
+    ("Ctrl-W", "Delete previous word in filter input."),
+    ("Enter", "Keep the filter and return to the table."),
     (
         "Esc",
-        "Leave filter input and restore the previously committed filter.",
+        "Cancel filter edit and restore the prior filter and tree.",
     ),
 ];
 
-const MENU_KEYS: [(&str, &str); 9] = [
+const MENU_KEYS: [(&str, &str); 10] = [
     ("Menu: ↑/↓, j/k, Tab", "Select Options / Help / Quit."),
     ("Menu: Enter/Space", "Activate selected menu button."),
     ("Menu: Esc/q/Q", "Close menu."),
     ("Options: ↑/↓, j/k", "Select option row."),
-    ("Options: ←/→", "Change/toggle selected option."),
+    (
+        "Options: ← / →, h / l",
+        "Change/toggle selected option (h/l need vim_keys).",
+    ),
     ("Options: Enter", "Edit update_ms or advance value."),
     ("Options: Esc/q/Q", "Close options and return to menu."),
     (
@@ -73,8 +83,12 @@ const MENU_KEYS: [(&str, &str); 9] = [
         "Type to edit; Backspace deletes; Enter commits; Esc cancels.",
     ),
     (
-        "Help: ↑/↓/j/k/PgUp/PgDn",
-        "Scroll help text. Esc/q/Q closes.",
+        "Help: ↑/↓, j/k, PgUp/PgDn",
+        "Scroll help text (j/k need vim_keys).",
+    ),
+    (
+        "Help: Home / End, g / G",
+        "Jump to top/bottom of help (g/G need vim_keys). Esc/q/Q closes.",
     ),
 ];
 
@@ -88,8 +102,8 @@ const MOUSE_ACTIONS: [(&str, &str); 8] = [
         "Sort by that column; click the active column again to reverse.",
     ),
     (
-        "Menu click",
-        "Click button to activate; click outside to close menu.",
+        "Menu: click / wheel",
+        "Click button to activate; wheel cycles menu buttons; click outside to close menu.",
     ),
     (
         "Options: click / wheel",
