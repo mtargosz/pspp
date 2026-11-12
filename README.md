@@ -326,17 +326,17 @@ When a selected metric cannot be read for a process (for example, `proc_pid_rusa
 
 ## Development
 
-`pspp` was built using a **multi-agent workflow** defined in `.github/agents/`. An `orchestrator` agent coordinates specialized role agents across sequential milestones, ensuring no two agents edit overlapping files concurrently and deliberately mixing model families (for example, pairing a `gpt-5.3-codex` coder with a `claude-opus-5.5` reviewer to catch cross-family blind spots):
+`pspp` uses a **multi-agent workflow** with generic role agents in `.github/agents/*.agent.md`, workspace instructions in `.github/copilot-instructions.md` and `.github/instructions/*.instructions.md`, and reusable task prompts in `.github/prompts/` (such as `/implement-review` to run milestone specs in `prompts/`). An `orchestrator` agent coordinates specialized role agents across sequential milestones while ensuring no two write-capable agents edit overlapping files concurrently:
 
 | Agent Profile | Model | Role |
 |---|---|---|
-| `orchestrator` | `claude-sonnet-5.5` | Reads project memory, selects ready milestones, delegates to specialists, verifies gates, commits. |
-| `planner` | `gpt-6.1-sol` | Breaks milestones into ordered tasks with concrete Rust signatures and testable acceptance criteria. |
-| `coder` | `gpt-5.3-codex` | Implements scoped Rust modules and unit tests with zero clippy warnings. |
-| `tester` | `claude-haiku-5.5` | Expands unit, fixture, CLI integration, and `TestBackend` TUI tests. |
-| `reviewer` | `claude-opus-5.5` | Audits correctness, unsafe/FFI boundaries, render-loop cost, and terminal-state hygiene. |
-| `documentator` | `gemini-4-carbon` | Maintains `README.md`, CLI `--help`, in-app Help explanations, and `doc/pspp.1`. |
-| `ui-stylist` | `claude-sonnet-5.5` | Implements btop visual fidelity: 101-step gradients, braille graphs, meters, and overlays. |
+| `orchestrator` | `Gemini 4 Carbon` | Reads project memory & review specs, selects ready milestones, delegates to specialists, verifies gates, commits. |
+| `planner` | `Gemini 4 Carbon` | Read-only decomposition of milestones into ordered tasks with concrete interfaces and testable acceptance criteria. |
+| `coder` | `Gemini 4 Carbon` | Implements scoped Rust modules and unit tests with zero clippy warnings. |
+| `tester` | `Gemini 4 Carbon` | Expands unit, fixture, CLI integration, and `TestBackend` TUI tests. |
+| `reviewer` | `Gemini 4 Carbon` | Read-only audit of correctness, unsafe/FFI boundaries, render-loop cost, and terminal-state hygiene. |
+| `documentator` | `Gemini 4 Carbon` | Maintains `README.md`, CLI `--help`, in-app Help explanations, and `doc/pspp.1`. |
+| `ui-stylist` | `Gemini 4 Carbon` | Implements btop visual fidelity: 101-step gradients, braille graphs, meters, and overlays. |
 
 ### Persistent Agent Memory (`.github/agents/memory/`)
 

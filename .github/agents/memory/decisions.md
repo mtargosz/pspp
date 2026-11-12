@@ -171,3 +171,20 @@ Per-agent models set in profile frontmatter:
   screen capture are produced from `help::key_sections()` and the TestBackend renderer; `cargo test --lib`
   fails on drift and `PSPP_UPDATE_DOCS=1 cargo test --lib` rewrites them. The screenshot TODO became an
   inline plain-text capture plus capture instructions (no binary image committed).
+
+## 2026-11-12 — agent customization & Gemini 4 Carbon standardization (user-confirmed)
+
+- **All custom agents standardized on `Gemini 4 Carbon`**: supersedes the 2026-11-11 multi-family model
+  table (`claude-sonnet-5.5`, `gpt-6.1-sol`, `gpt-5.3-codex`, `claude-haiku-5.5`, `claude-opus-5.5`).
+  Frontmatter uses `model: "Gemini 4 Carbon (copilot)"` so both
+  VS Code Copilot and CLI runners select Gemini 4 Carbon cleanly. *User confirmed.*
+- **Generic `.agent.md` roles + standard instruction separation**:
+  - Renamed `.github/agents/*.md` → `.github/agents/*.agent.md` (VS Code Custom Agent convention) and
+    removed hardcoded `pspp` assumptions from agent bodies, adding explicit `tools` / `agents` boundaries
+    (`planner` = `[read, search]`, `reviewer` = `[read, search, execute]`, `orchestrator` = `[read, search, edit, execute, agent, todo]`
+    scoped to `[planner, coder, tester, reviewer, documentator, ui-stylist]`).
+  - Moved `pspp`-specific context into `.github/copilot-instructions.md` (always-on stack, memory/specs,
+    verification gates, git rules) plus file-scoped `.github/instructions/{rust-platform,tui-btop,docs-sync}.instructions.md`.
+  - Added `.github/prompts/implement-review.prompt.md` (`/implement-review`) and seeded M24–M29 from
+    `prompts/pspp_review_2_prompt.md` into `progress.md` for immediate pickup. *User confirmed.*
+- **`.github/_workflows/ci.yml` kept underscored** (disabled on GitHub) per user preference.

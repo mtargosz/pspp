@@ -1,6 +1,6 @@
 # pspp — Progress board (living document)
 
-## Project status: COMPLETE (follow-up milestones M15–M23 from the 2026-11-11 review are done)
+## Project status: IN PROGRESS (second review follow-up milestones M24–M29 in `prompts/pspp_review_2_prompt.md`)
 
 ## Status key: [ ] pending · [~] in progress · [x] done · [!] blocked
 
@@ -30,6 +30,12 @@
 - [x] M21 perf(collect): background collection; lazy smaps_rollup; tree owns snapshot
 - [x] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
 - [x] M23 refactor: single source of truth for enums; docs pass
+- [ ] M24 fix(ui): clear overlays, center menu button labels, polish scrollbars and footers
+- [ ] M25 fix(ui): fix ancestor tree connectors, meter styling, column widths, and responsive status/filter bar
+- [ ] M26 fix(collect): accurate macOS RSS/VSZ approximation, lazy rusage, and unified Option<u64> MemSet
+- [ ] M27 fix(config,cli): persist save_on_exit=false, align sort direction, enrich JSON approx fields
+- [ ] M28 feat(ui): live filter-as-you-type, collapse/expand-all keys, force_tty fidelity, and event-loop coalescing
+- [ ] M29 docs(all): fix stale man page, option descriptions, CI path docs, and regenerate tables
 
 ## Log
 
@@ -339,6 +345,16 @@
   public APIs refreshed.
 - Gates at the end of the series: build, test (unit + model + CLI), clippy `-D warnings`, fmt, doc, and
   `cargo check --target x86_64-unknown-linux-gnu --all-targets` all clean.
+
+### 2026-11-12 — orchestrator (agent customization & M24–M29 seeding)
+- Standardized all 7 custom agents on `Gemini 4 Carbon` (`model: "Gemini 4 Carbon (copilot)"`)
+  and renamed `.github/agents/*.md` to VS Code standard `.github/agents/*.agent.md`.
+- Made all 7 agent profiles generic and project-agnostic with explicit frontmatter `tools` and `agents`
+  restrictions (`planner` and `reviewer` strictly read-only on files).
+- Extracted `pspp`-specific conventions into `.github/copilot-instructions.md` and scoped instruction files
+  in `.github/instructions/` (`rust-platform.instructions.md`, `tui-btop.instructions.md`, `docs-sync.instructions.md`).
+- Added `.github/prompts/implement-review.prompt.md` (`/implement-review`) and seeded milestones M24–M29 from
+  `prompts/pspp_review_2_prompt.md` into the plan above; synced `README.md` and `decisions.md`.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.
