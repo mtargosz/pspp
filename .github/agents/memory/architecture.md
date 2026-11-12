@@ -164,10 +164,14 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   - Scale `max` = system total memory (`App::mem_graph_max`); values clamp.
 - `GraphSymbols::{detect(), from_term}`; `App.graph_symbol` stores the user choice
   (`auto|braille|block|tty`) and resolves to a concrete renderer at draw time.
-- `graph::meter_spans(theme, width, value, scale)`: per-cell gradient `■` filled part + `meter_bg` rest.
-- Table columns: COMM, PID, OWN, `<MEM> Σ`, `%` (Σ ÷ total RAM, 1 decimal), CHILDREN, METER.
-- Layout: status line, then rounded " mem " box (6 rows: 3 graph + 1 summary line, hidden when the inner
-  area is < 12 rows), table header, table body, hint bar.
+- `graph::meter_spans` / `graph::meter_spans_styled(theme, width, value, scale, ascii_glyphs, selected)`:
+  per-cell positional gradient `■` filled part + `meter_bg` rest (`selected_fg`/`meter_bg` over `selected_bg`
+  when selected; `#` filled / `-` empty when `GraphSymbols::Tty` or `NO_COLOR` is active).
+- Table columns: COMM (Unicode display-width truncated with `…`), PID, OWN (11 cols), `<MEM> Σ` (min 11 cols),
+  `%` (Σ ÷ total RAM, 1 decimal), CHILDREN, METER; active sortable header displays `↓`/`↑` in `hi_fg`.
+- Layout: priority-packed status line (`filter` kept visible at 80 cols), then rounded " mem " box (6 rows:
+  3 graph + 1 summary line, hidden when the inner area is < 12 rows), table header, table body (centered
+  empty-state notice when `rows` is empty), hint bar.
 
 ## Menus + config (milestone 10)
 

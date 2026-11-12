@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
+use unicode_width::UnicodeWidthStr;
 
 use crate::collect::Snapshot;
 use crate::model::{AggMode, MemKind, ProcTree, SortBy};
@@ -292,20 +293,22 @@ fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts, ram: u64) ->
         .chain(rendered_rows.iter())
         .chain(std::iter::once(&total_row))
     {
-        for (idx, cell) in row.iter().enumerate() {
-            widths[idx] = widths[idx].max(cell.chars().count());
+        for (col_width, cell) in widths.iter_mut().zip(row.iter()) {
+            *col_width = (*col_width).max(UnicodeWidthStr::width(cell.as_str()));
         }
     }
 
     let format_line = |cells: &[String; COLS]| -> String {
         let line = cells
             .iter()
-            .enumerate()
-            .map(|(idx, cell)| {
-                if LEFT[idx] {
-                    format!("{cell:<w$}", w = widths[idx])
+            .zip(widths.iter().copied())
+            .zip(LEFT.iter().copied())
+            .map(|((cell, col_width), left_align)| {
+                let pad = col_width.saturating_sub(UnicodeWidthStr::width(cell.as_str()));
+                if left_align {
+                    format!("{cell}{}", " ".repeat(pad))
                 } else {
-                    format!("{cell:>w$}", w = widths[idx])
+                    format!("{}{cell}", " ".repeat(pad))
                 }
             })
             .collect::<Vec<_>>()
@@ -735,5 +738,40 @@ mod tests {
         assert!(parse_size("1e3").is_err());
         assert!(parse_size("inf").is_err());
         assert!(parse_size("99999999999999999999").is_err());
+    }
+
+    #[test]
+    fn render_plain_aligns_cjk_and_emoji_process_names_by_display_width() {
+        use unicode_width::UnicodeWidthStr;
+
+        let mut snap = snapshot(vec![
+            proc(1, 0, "日本語プロセス", 2048),
+            proc(2, 1, "🚀worker", 1024),
+            proc(3, 0, "bash", 512),
+        ]);
+        snap.total_mem = 10_240;
+
+        let rendered = run_query(snap, &QueryOpts::default()).output;
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(lines.len(), 6, "{rendered}");
+
+        // Separator line width equals the exact display width of every full data row.
+        let sep_width = UnicodeWidthStr::width(lines[1]);
+        for data_line in &lines[2..=4] {
+            assert_eq!(
+                UnicodeWidthStr::width(*data_line),
+                sep_width,
+                "misaligned row: {data_line}\n{rendered}"
+            );
+        }
+
+        // Right edge of OWN, RSS Σ, %, and CHILDREN columns align across CJK, emoji, and ASCII rows.
+        let pct_end_col = |line: &str| -> usize {
+            let idx = line.find('%').expect("pct");
+            UnicodeWidthStr::width(&line[..=idx])
+        };
+        assert_eq!(pct_end_col(lines[2]), pct_end_col(lines[3]));
+        assert_eq!(pct_end_col(lines[2]), pct_end_col(lines[4]));
+        assert_eq!(pct_end_col(lines[2]), pct_end_col(lines[5]));
     }
 }

@@ -258,19 +258,62 @@ pub fn render(
 
 /// btop-style `■` meter: filled cells colored at their gradient position, remainder `meter_bg`.
 pub fn meter_spans(theme: &Theme, width: usize, value: u64, scale: u64) -> Vec<Span<'static>> {
+    meter_spans_styled(theme, width, value, scale, false, false)
+}
+
+/// Renders a `width`-cell meter for `value / scale`.
+///
+/// - Unselected rows colour each filled cell at its positional gradient stop and paint empty cells
+///   in `meter_bg`.
+/// - Selected rows keep `selected_bg` across all cells while distinguishing `0..filled`
+///   (`selected_fg`) from `filled..width` (`meter_bg`).
+/// - `ascii` mode (`Tty` symbols or `NO_COLOR`) uses `'#'` for filled cells and `'-'` for empty
+///   cells so proportions stay legible without colour.
+pub fn meter_spans_styled(
+    theme: &Theme,
+    width: usize,
+    value: u64,
+    scale: u64,
+    selected: bool,
+    ascii: bool,
+) -> Vec<Span<'static>> {
     if width == 0 {
         return Vec::new();
     }
     let filled = crate::ui::draw::meter_fill_blocks(value, scale, width);
+    let (fill_str, empty_ch) = if ascii { ("#", '-') } else { ("■", '■') };
+
+    if selected {
+        let selected_bg = theme.color(theme.selected_bg);
+        let mut spans = Vec::new();
+        if filled > 0 {
+            spans.push(Span::styled(
+                fill_str.repeat(filled),
+                Style::default()
+                    .fg(theme.color(theme.selected_fg))
+                    .bg(selected_bg),
+            ));
+        }
+        if filled < width {
+            spans.push(Span::styled(
+                empty_ch.to_string().repeat(width - filled),
+                Style::default()
+                    .fg(theme.color(theme.meter_bg))
+                    .bg(selected_bg),
+            ));
+        }
+        return spans;
+    }
+
     let mut spans: Vec<Span<'static>> = (0..filled)
         .map(|i| {
             let pct = ((i + 1) * 100 / width) as u8;
-            Span::styled("■", Style::default().fg(theme.usage_color(pct)))
+            Span::styled(fill_str, Style::default().fg(theme.usage_color(pct)))
         })
         .collect();
     if filled < width {
         spans.push(Span::styled(
-            "■".repeat(width - filled),
+            empty_ch.to_string().repeat(width - filled),
             Style::default().fg(theme.color(theme.meter_bg)),
         ));
     }
@@ -452,5 +495,47 @@ mod tests {
         assert_eq!(total, 10);
         assert_eq!(spans.len(), 6);
         assert!(meter_spans(&theme, 0, 1, 2).is_empty());
+    }
+
+    #[test]
+    fn meter_spans_styled_handles_gradient_selection_and_ascii() {
+        let theme = Theme::new(true);
+
+        // Unselected colour meter uses positional per-cell gradient stops.
+        let grad = meter_spans_styled(&theme, 4, 100, 100, false, false);
+        assert_eq!(grad.len(), 4);
+        assert_ne!(grad[0].style.fg, grad[3].style.fg);
+        assert_eq!(grad[0].style.fg, Some(theme.usage_color(25)));
+        assert_eq!(grad[3].style.fg, Some(theme.usage_color(100)));
+
+        // Selected 0% meter keeps selected_bg across all cells with 0 selected_fg cells.
+        let sel_zero = meter_spans_styled(&theme, 4, 0, 100, true, false);
+        assert_eq!(sel_zero.len(), 1);
+        assert_eq!(sel_zero[0].content.as_ref(), "■■■■");
+        assert_eq!(sel_zero[0].style.fg, Some(theme.color(theme.meter_bg)));
+        assert_eq!(sel_zero[0].style.bg, Some(theme.color(theme.selected_bg)));
+
+        // Selected 50% meter splits selected_fg and meter_bg on selected_bg.
+        let sel_half = meter_spans_styled(&theme, 4, 50, 100, true, false);
+        assert_eq!(sel_half.len(), 2);
+        assert_eq!(sel_half[0].content.as_ref(), "■■");
+        assert_eq!(sel_half[0].style.fg, Some(theme.color(theme.selected_fg)));
+        assert_eq!(sel_half[0].style.bg, Some(theme.color(theme.selected_bg)));
+        assert_eq!(sel_half[1].content.as_ref(), "■■");
+        assert_eq!(sel_half[1].style.fg, Some(theme.color(theme.meter_bg)));
+        assert_eq!(sel_half[1].style.bg, Some(theme.color(theme.selected_bg)));
+
+        // ASCII/TTY/no-color mode uses '#' for filled and '-' for empty.
+        let ascii_text = |val, selected| -> String {
+            meter_spans_styled(&theme, 4, val, 100, selected, true)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        for selected in [false, true] {
+            assert_eq!(ascii_text(0, selected), "----");
+            assert_eq!(ascii_text(50, selected), "##--");
+            assert_eq!(ascii_text(100, selected), "####");
+        }
     }
 }

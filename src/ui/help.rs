@@ -1,5 +1,6 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 use crate::model::MemKind;
 use crate::ui::theme::Theme;
@@ -251,7 +252,8 @@ fn push_key_rows(
         let wrapped = wrap_text(description, desc_width);
         for (idx, part) in wrapped.iter().enumerate() {
             let left = if idx == 0 {
-                format!("{key:<key_width$}")
+                let pad = key_width.saturating_sub(UnicodeWidthStr::width(*key));
+                format!("{key}{}", " ".repeat(pad))
             } else {
                 " ".repeat(key_width)
             };
@@ -289,23 +291,25 @@ pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
     let mut current = String::new();
+    let mut current_width = 0_usize;
 
     for word in text.split_whitespace() {
+        let word_width = UnicodeWidthStr::width(word);
         if current.is_empty() {
             current.push_str(word);
+            current_width = word_width;
             continue;
         }
 
-        let next_len = current
-            .chars()
-            .count()
-            .saturating_add(1 + word.chars().count());
+        let next_len = current_width.saturating_add(1).saturating_add(word_width);
         if next_len <= width {
             current.push(' ');
             current.push_str(word);
+            current_width = next_len;
         } else {
             lines.push(current);
             current = word.to_owned();
+            current_width = word_width;
         }
     }
 
@@ -471,5 +475,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn wrap_text_and_key_rows_measure_unicode_display_width() {
+        use unicode_width::UnicodeWidthStr;
+
+        // Each CJK char is 2 display columns: "日本 語文" is 4 + 1 + 4 = 9 columns (not 5).
+        assert_eq!(super::wrap_text("日本 語文", 8), vec!["日本", "語文"]);
+        assert_eq!(super::wrap_text("日本 語文", 9), vec!["日本 語文"]);
+
+        let theme = crate::ui::theme::Theme::new(true);
+        let mut lines = Vec::new();
+        super::push_key_rows(&mut lines, &theme, &[("日本語", "desc")], 10, 40);
+        assert_eq!(
+            UnicodeWidthStr::width(lines[0].spans[0].content.as_ref()),
+            10
+        );
     }
 }

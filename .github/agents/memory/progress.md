@@ -31,7 +31,7 @@
 - [x] M22 test: synthetic snapshots, fixtures, TestBackend screens, CI
 - [x] M23 refactor: single source of truth for enums; docs pass
 - [x] M24 fix(ui): clear overlays, center menu button labels, polish scrollbars and footers
-- [ ] M25 fix(ui): fix ancestor tree connectors, meter styling, column widths, and responsive status/filter bar
+- [x] M25 fix(ui): fix ancestor tree connectors, meter styling, column widths, and responsive status/filter bar
 - [ ] M26 fix(collect): accurate macOS RSS/VSZ approximation, lazy rusage, and unified Option<u64> MemSet
 - [ ] M27 fix(config,cli): persist save_on_exit=false, align sort direction, enrich JSON approx fields
 - [ ] M28 feat(ui): live filter-as-you-type, collapse/expand-all keys, force_tty fidelity, and event-loop coalescing
@@ -366,6 +366,18 @@
   scrollbars to single-line `.track_symbol(Some("│"))` with right-column reservation in `Options`.
 - Added 4 `TestBackend` tests verifying overlay clearing/`main_bg`, interior button labels, 2-row description
   wrapping without duplicate hint bars, and single-line scrollbar tracks; reviewed and all gates green.
+
+### 2026-11-12 — ui-stylist & reviewer (M25)
+- Fixed off-by-one ancestor continuation slice in `App::build_display_rows` (`&ancestor_last[1..depth]`),
+  restoring `│  ` bars under single-root subtrees (`launchd`) and eliminating spurious `│  ` under `└─` nodes.
+- Unified meter rendering via `graph::meter_spans_styled`: positional per-cell gradients on unselected rows,
+  proportion-preserving `selected_fg`/`meter_bg` over `selected_bg` on selected rows (`0%` no longer looks solid
+  white), and `'#'`/`'-'` ASCII glyphs under `GraphSymbols::Tty` or `NO_COLOR`.
+- Widened `OWN` and minimum `<MEM> Σ` to 11 cols (`1023.4 KiB~` unclipped) and added `↓`/`↑` + `hi_fg` on the
+  active sort header.
+- Added priority-packed responsive status bar (`filter: <input>█` visible on 80-col screens), fixed `mem` box
+  `meter_width == 0` spacing, added centered empty-table notices, switched width/truncation math to `unicode-width`
+  with `…` truncation on `COMM`, and synced `README.md` screen block.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.

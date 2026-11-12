@@ -66,6 +66,11 @@ pub fn truecolor_from_env(colorterm: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+/// True when `NO_COLOR` is set to a non-empty value (<https://no-color.org/>).
+pub fn no_color_from_env(val: Option<&str>) -> bool {
+    val.is_some_and(|v| !v.is_empty())
+}
+
 /// `truecolor` option: `auto` follows `COLORTERM`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TruecolorMode {
@@ -438,6 +443,14 @@ mod tests {
         assert!(truecolor_from_env(Some("24bit")));
         assert!(!truecolor_from_env(Some("256color")));
         assert!(!truecolor_from_env(None));
+    }
+
+    #[test]
+    fn no_color_detection() {
+        assert!(!no_color_from_env(None));
+        assert!(!no_color_from_env(Some("")));
+        assert!(no_color_from_env(Some("1")));
+        assert!(no_color_from_env(Some("0")));
     }
 
     #[test]

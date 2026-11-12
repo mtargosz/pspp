@@ -7,6 +7,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::model::SortBy;
 use crate::query::{format_pct, format_size};
@@ -16,7 +17,7 @@ use crate::ui::help;
 
 const PCT_COL_WIDTH: u16 = 6;
 const COMM_MIN_WIDTH: u16 = 12;
-const OWN_COL_WIDTH: u16 = 10;
+const OWN_COL_WIDTH: u16 = 11;
 const CHILDREN_COL_WIDTH: u16 = 8;
 const METER_MIN_WIDTH: u16 = 12;
 const METER_MAX_WIDTH: u16 = 30;
@@ -72,48 +73,7 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
         render_mem_box(frame, mem_area, app);
     }
 
-    let used_pct = percentage(app.mem_used(), app.tree.total_mem());
-    let status = Line::from(
-        vec![
-            Span::styled(
-                format!("{} procs  ", app.tree.proc_count()),
-                Style::default().fg(theme.color(theme.main_fg)),
-            ),
-            Span::styled("mem ", fg(theme.inactive_fg)),
-            Span::styled(
-                app.mem_kind.label().to_ascii_uppercase(),
-                Style::default().fg(theme.color(theme.main_fg)),
-            ),
-            Span::styled(
-                format!("  agg {}", app.agg_mode),
-                Style::default().fg(theme.color(theme.main_fg)),
-            ),
-            Span::styled(
-                format!("  sort {}{}", app.sort_by, sort_dir_label(app.sort_desc)),
-                Style::default().fg(theme.color(theme.main_fg)),
-            ),
-            Span::styled(
-                format!("  update {}ms", app.update_ms),
-                Style::default().fg(theme.color(theme.main_fg)),
-            ),
-            Span::styled(
-                format!(
-                    "  used {} / {}",
-                    format_size(app.mem_used(), app.base10),
-                    format_size(app.tree.total_mem(), app.base10)
-                ),
-                Style::default().fg(theme.usage_color(used_pct)),
-            ),
-        ]
-        .into_iter()
-        .chain(app.filter_indicator().into_iter().map(|text| {
-            Span::styled(
-                format!("  {text}"),
-                Style::default().fg(theme.color(theme.hi_fg)),
-            )
-        }))
-        .collect::<Vec<_>>(),
-    );
+    let status = status_line(app, usize::from(status_area.width));
     frame.render_widget(Paragraph::new(status), status_area);
 
     if body_area.width == 0 {
@@ -130,10 +90,15 @@ fn draw_main(frame: &mut Frame<'_>, app: &mut App) {
 
     let agg_header = {
         let approx = app.rows().iter().any(|row| row.aggregated_approximate);
-        if approx {
+        let base = if approx {
             format!("{} Σ~", app.mem_kind.label().to_ascii_uppercase())
         } else {
             format!("{} Σ", app.mem_kind.label().to_ascii_uppercase())
+        };
+        if app.sort_by() == SortBy::Aggregated {
+            format!("{base}{}", sort_dir_label(app.sort_desc()))
+        } else {
+            base
         }
     };
 
@@ -217,26 +182,39 @@ fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let pct = percentage(used, max);
     let label = "used ".to_owned();
     let used_text = format_size(used, app.base10);
-    let max_text = format!(" / {} ", format_size(max, app.base10));
+    let max_text = format!(" / {}", format_size(max, app.base10));
     let pct_text = format!(" {pct}%");
     let sum_text = format!(
         "  Σ {} {}",
         app.mem_kind.label().to_ascii_uppercase(),
         format_size(app.mem_kind_sum(), app.base10)
     );
-    let fixed = label.chars().count()
-        + used_text.chars().count()
-        + max_text.chars().count()
-        + pct_text.chars().count()
-        + sum_text.chars().count();
-    let meter_width = width.saturating_sub(fixed);
+    let base_fixed = UnicodeWidthStr::width(label.as_str())
+        + UnicodeWidthStr::width(used_text.as_str())
+        + UnicodeWidthStr::width(max_text.as_str())
+        + UnicodeWidthStr::width(pct_text.as_str())
+        + UnicodeWidthStr::width(sum_text.as_str());
+    let meter_width = width.saturating_sub(base_fixed + 1);
 
     let mut spans = vec![
         Span::styled(label, Style::default().fg(theme.color(theme.inactive_fg))),
         Span::styled(used_text, Style::default().fg(theme.usage_color(pct))),
         Span::styled(max_text, Style::default().fg(theme.color(theme.main_fg))),
     ];
-    spans.extend(graph::meter_spans(theme, meter_width, used, max));
+    if meter_width > 0 {
+        spans.push(Span::styled(
+            " ",
+            Style::default().fg(theme.color(theme.main_fg)),
+        ));
+        spans.extend(graph::meter_spans_styled(
+            theme,
+            meter_width,
+            used,
+            max,
+            false,
+            app.ascii_meters(),
+        ));
+    }
     spans.push(Span::styled(
         pct_text,
         Style::default().fg(theme.usage_color(pct)),
@@ -256,38 +234,59 @@ fn render_mem_box(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_header(frame: &mut Frame<'_>, columns: &[Rect; 7], agg_header: &str, app: &App) {
     let theme = &app.theme;
-    let style = Style::default().fg(theme.color(theme.title));
+    let base_style = Style::default().fg(theme.color(theme.title));
+    let active_style = Style::default().fg(theme.color(theme.hi_fg));
+    let arrow = sort_dir_label(app.sort_desc());
 
-    frame.render_widget(Paragraph::new("COMM").style(style), columns[0]);
+    let sortable = |label: &str, key: SortBy| -> (String, Style) {
+        if app.sort_by() == key {
+            (format!("{label}{arrow}"), active_style)
+        } else {
+            (label.to_owned(), base_style)
+        }
+    };
+
+    let (comm_label, comm_style) = sortable("COMM", SortBy::Comm);
+    let (pid_label, pid_style) = sortable("PID", SortBy::Pid);
+    let (own_label, own_style) = sortable("OWN", SortBy::Own);
+    let agg_style = if app.sort_by() == SortBy::Aggregated {
+        active_style
+    } else {
+        base_style
+    };
+
+    frame.render_widget(Paragraph::new(comm_label).style(comm_style), columns[0]);
     frame.render_widget(
-        Paragraph::new("PID")
-            .style(style)
+        Paragraph::new(pid_label)
+            .style(pid_style)
             .alignment(Alignment::Right),
         columns[1],
     );
     frame.render_widget(
-        Paragraph::new("OWN")
-            .style(style)
+        Paragraph::new(own_label)
+            .style(own_style)
             .alignment(Alignment::Right),
         columns[2],
     );
     frame.render_widget(
         Paragraph::new(agg_header)
-            .style(style)
+            .style(agg_style)
             .alignment(Alignment::Right),
         columns[3],
     );
     frame.render_widget(
-        Paragraph::new("%").style(style).alignment(Alignment::Right),
+        Paragraph::new("%")
+            .style(base_style)
+            .alignment(Alignment::Right),
         columns[4],
     );
     frame.render_widget(
         Paragraph::new("CHILDREN")
-            .style(style)
+            .style(base_style)
             .alignment(Alignment::Right),
         columns[5],
     );
-    frame.render_widget(Paragraph::new("METER").style(style), columns[6]);
+    frame.render_widget(Paragraph::new("METER").style(base_style), columns[6]);
 }
 
 fn render_body(
@@ -297,13 +296,43 @@ fn render_body(
     app: &App,
 ) -> (usize, Vec<Option<Range<u16>>>) {
     let rows = app.rows();
+    if rows.is_empty() {
+        if body_area.height > 0 && body_area.width > 0 {
+            let msg = if app.is_filter_active() {
+                "no matching processes (press c to clear)"
+            } else {
+                "no processes"
+            };
+            let notice = truncate_display_width(msg, usize::from(body_area.width));
+            let notice_rect = Rect {
+                x: body_area.x,
+                y: body_area.y + body_area.height / 2,
+                width: body_area.width,
+                height: 1,
+            };
+            frame.render_widget(
+                Paragraph::new(notice)
+                    .style(Style::default().fg(app.theme.color(app.theme.inactive_fg)))
+                    .alignment(Alignment::Center),
+                notice_rect,
+            );
+        }
+        return (0, vec![None; usize::from(body_area.height)]);
+    }
+
     let start = app.scroll();
     let end = (start + usize::from(body_area.height)).min(rows.len());
     let max_visible_agg = rows.iter().map(|row| row.aggregated).max().unwrap_or(0);
 
     let mut toggle_zones = Vec::with_capacity(usize::from(body_area.height));
 
-    for (line_idx, row_idx) in (start..end).enumerate() {
+    for (line_idx, row) in rows
+        .iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .enumerate()
+    {
+        let row_idx = start + line_idx;
         let row_rect = Rect {
             x: body_area.x,
             y: body_area.y + u16::try_from(line_idx).unwrap_or(u16::MAX),
@@ -311,7 +340,6 @@ fn render_body(
             height: 1,
         };
 
-        let row = &rows[row_idx];
         let selected = row_idx == app.cursor();
         if selected {
             frame.render_widget(
@@ -383,7 +411,6 @@ fn render_row_cells(
 
     let own_pct = percentage(row.own, app.tree.total_mem());
     let agg_pct = percentage(row.aggregated, app.tree.total_mem());
-    let meter_pct = percentage(row.aggregated, max_visible_agg);
 
     let default_style = Style::default().fg(theme.color(theme.main_fg));
     let (prefix_style, comm_style) = if selected {
@@ -401,12 +428,15 @@ fn render_row_cells(
     } else {
         (default_style, default_style)
     };
+    let comm_spans = truncate_comm_spans(
+        &row.tree_prefix,
+        prefix_style,
+        &row.comm,
+        comm_style,
+        usize::from(columns[0].width),
+    );
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(row.tree_prefix.clone(), prefix_style),
-            Span::styled(row.comm.clone(), comm_style),
-        ]))
-        .alignment(Alignment::Left),
+        Paragraph::new(Line::from(comm_spans)).alignment(Alignment::Left),
         columns[0],
     );
     frame.render_widget(
@@ -464,47 +494,236 @@ fn render_row_cells(
         columns[5],
     );
 
-    let meter_line = meter_line(
-        meter_width,
-        row.aggregated,
-        max_visible_agg,
-        app,
-        selected,
-        meter_pct,
-    );
+    let meter_line = meter_line(meter_width, row.aggregated, max_visible_agg, app, selected);
     frame.render_widget(Paragraph::new(meter_line), columns[6]);
 }
 
-fn meter_line(
+fn meter_line(width: usize, value: u64, scale: u64, app: &App, selected: bool) -> Line<'static> {
+    Line::from(graph::meter_spans_styled(
+        &app.theme,
+        width,
+        value,
+        scale,
+        selected,
+        app.ascii_meters(),
+    ))
+}
+
+struct StatusSegment {
+    order: usize,
     width: usize,
-    value: u64,
-    scale: u64,
-    app: &App,
-    selected: bool,
-    meter_pct: u8,
-) -> Line<'static> {
+    spans: Vec<Span<'static>>,
+}
+
+/// Priority-ordered status bar that drops lower-priority segments cleanly on narrow terminals
+/// while keeping `filter: <input>█` visible (left-cropping `<input>` with `…` only when the
+/// filter segment alone exceeds `width`).
+fn status_line(app: &App, width: usize) -> Line<'static> {
     if width == 0 {
         return Line::default();
     }
 
     let theme = &app.theme;
-    let selected_style = Style::default()
-        .fg(theme.color(theme.selected_fg))
-        .bg(theme.color(theme.selected_bg));
+    let fg = |rgb| Style::default().fg(theme.color(rgb));
+    let used_pct = percentage(app.mem_used(), app.tree.total_mem());
 
-    if selected {
-        return Line::from(Span::styled("■".repeat(width), selected_style));
+    let mut candidates = Vec::with_capacity(7);
+
+    // Priority 1 (highest): active or in-progress filter indicator (`order = 6`, rightmost).
+    if let Some(raw_filter) = app.filter_indicator() {
+        let cropped = format_filter_segment(&raw_filter, app.mode == AppMode::FilterInput, width);
+        let seg_w = UnicodeWidthStr::width(cropped.as_str());
+        candidates.push(StatusSegment {
+            order: 6,
+            width: seg_w,
+            spans: vec![Span::styled(cropped, fg(theme.hi_fg))],
+        });
     }
 
-    let filled = meter_fill_blocks(value, scale, width);
-    let empty = width.saturating_sub(filled);
-    let filled_style = Style::default().fg(theme.usage_color(meter_pct));
-    let empty_style = Style::default().fg(theme.color(theme.meter_bg));
+    // Priority 2: process count (`order = 0`).
+    let procs_text = format!("{} procs", app.tree.proc_count());
+    candidates.push(StatusSegment {
+        order: 0,
+        width: UnicodeWidthStr::width(procs_text.as_str()),
+        spans: vec![Span::styled(procs_text, fg(theme.main_fg))],
+    });
 
-    Line::from(vec![
-        Span::styled("■".repeat(filled), filled_style),
-        Span::styled("■".repeat(empty), empty_style),
-    ])
+    // Priority 3: system memory used / total (`order = 5`).
+    let used_text = format!(
+        "used {} / {}",
+        format_size(app.mem_used(), app.base10),
+        format_size(app.tree.total_mem(), app.base10)
+    );
+    candidates.push(StatusSegment {
+        order: 5,
+        width: UnicodeWidthStr::width(used_text.as_str()),
+        spans: vec![Span::styled(
+            used_text,
+            Style::default().fg(theme.usage_color(used_pct)),
+        )],
+    });
+
+    // Priority 4: memory metric (`order = 1`).
+    let mem_label = app.mem_kind.label().to_ascii_uppercase();
+    candidates.push(StatusSegment {
+        order: 1,
+        width: 4 + UnicodeWidthStr::width(mem_label.as_str()),
+        spans: vec![
+            Span::styled("mem ", fg(theme.inactive_fg)),
+            Span::styled(mem_label, fg(theme.main_fg)),
+        ],
+    });
+
+    // Priority 5: aggregation mode (`order = 2`).
+    let agg_text = format!("agg {}", app.agg_mode);
+    candidates.push(StatusSegment {
+        order: 2,
+        width: UnicodeWidthStr::width(agg_text.as_str()),
+        spans: vec![Span::styled(agg_text, fg(theme.main_fg))],
+    });
+
+    // Priority 6: sort key & direction (`order = 3`).
+    let sort_text = format!("sort {}{}", app.sort_by(), sort_dir_label(app.sort_desc()));
+    candidates.push(StatusSegment {
+        order: 3,
+        width: UnicodeWidthStr::width(sort_text.as_str()),
+        spans: vec![Span::styled(sort_text, fg(theme.main_fg))],
+    });
+
+    // Priority 7 (lowest, dropped first): refresh interval (`order = 4`).
+    let update_text = format!("update {}ms", app.update_ms);
+    candidates.push(StatusSegment {
+        order: 4,
+        width: UnicodeWidthStr::width(update_text.as_str()),
+        spans: vec![Span::styled(update_text, fg(theme.main_fg))],
+    });
+
+    let mut kept: Vec<StatusSegment> = Vec::new();
+    let mut used_width = 0_usize;
+    for seg in candidates {
+        if seg.width == 0 {
+            continue;
+        }
+        let sep = if kept.is_empty() { 0 } else { 2 };
+        if used_width.saturating_add(sep).saturating_add(seg.width) <= width {
+            used_width = used_width.saturating_add(sep).saturating_add(seg.width);
+            kept.push(seg);
+        }
+    }
+    kept.sort_by_key(|seg| seg.order);
+
+    let mut spans = Vec::new();
+    for (idx, seg) in kept.into_iter().enumerate() {
+        if idx > 0 {
+            spans.push(Span::styled("  ", fg(theme.main_fg)));
+        }
+        spans.extend(seg.spans);
+    }
+    Line::from(spans)
+}
+
+fn format_filter_segment(text: &str, editing: bool, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_owned();
+    }
+    if editing {
+        let input = text
+            .strip_prefix("filter: ")
+            .and_then(|s| s.strip_suffix('█'))
+            .unwrap_or(text);
+        if max_width == 1 {
+            return "█".to_owned();
+        }
+        if max_width < 10 {
+            let tail = take_display_suffix(input, max_width - 2);
+            return format!("…{tail}█");
+        }
+        let tail = take_display_suffix(input, max_width - 10);
+        return format!("filter: …{tail}█");
+    }
+    truncate_display_width(text, max_width)
+}
+
+fn take_display_prefix(text: &str, max_width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0_usize;
+    for ch in text.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used.saturating_add(w) > max_width {
+            break;
+        }
+        used = used.saturating_add(w);
+        out.push(ch);
+    }
+    out
+}
+
+fn take_display_suffix(text: &str, max_width: usize) -> String {
+    let mut rev_chars = Vec::new();
+    let mut used = 0_usize;
+    for ch in text.chars().rev() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used.saturating_add(w) > max_width {
+            break;
+        }
+        used = used.saturating_add(w);
+        rev_chars.push(ch);
+    }
+    while rev_chars
+        .last()
+        .is_some_and(|ch| UnicodeWidthChar::width(*ch).unwrap_or(0) == 0)
+    {
+        rev_chars.pop();
+    }
+    rev_chars.into_iter().rev().collect()
+}
+
+/// Truncates `text` to at most `max_width` terminal display columns, appending `…` when cut and
+/// never splitting a wide (2-column) character.
+pub(crate) fn truncate_display_width(text: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_owned();
+    }
+    if max_width == 1 {
+        return "…".to_owned();
+    }
+    let prefix = take_display_prefix(text, max_width - 1);
+    format!("{prefix}…")
+}
+
+fn truncate_comm_spans(
+    prefix: &str,
+    prefix_style: Style,
+    comm: &str,
+    comm_style: Style,
+    max_width: usize,
+) -> Vec<Span<'static>> {
+    if max_width == 0 {
+        return Vec::new();
+    }
+    let prefix_w = UnicodeWidthStr::width(prefix);
+    let comm_w = UnicodeWidthStr::width(comm);
+    if prefix_w.saturating_add(comm_w) <= max_width {
+        return vec![
+            Span::styled(prefix.to_owned(), prefix_style),
+            Span::styled(comm.to_owned(), comm_style),
+        ];
+    }
+    if prefix_w < max_width {
+        let avail = max_width - prefix_w;
+        return vec![
+            Span::styled(prefix.to_owned(), prefix_style),
+            Span::styled(truncate_display_width(comm, avail), comm_style),
+        ];
+    }
+    let cut = take_display_prefix(prefix, max_width.saturating_sub(1));
+    vec![Span::styled(format!("{cut}…"), prefix_style)]
 }
 
 /// Key hints for the current mode as `(keys, meaning)` segments, most important first.
@@ -557,11 +776,11 @@ fn hint_line(mode: AppMode, width: usize, app: &App) -> Line<'static> {
     let mut used = 0_usize;
     for (keys, meaning) in hint_segments(mode) {
         let gap = if spans.is_empty() { 0 } else { 2 };
-        let seg_len = keys.chars().count()
+        let seg_len = UnicodeWidthStr::width(*keys)
             + if meaning.is_empty() {
                 0
             } else {
-                1 + meaning.chars().count()
+                1 + UnicodeWidthStr::width(*meaning)
             };
         if used + gap + seg_len > width {
             break;
@@ -877,9 +1096,9 @@ fn meter_width(total_width: u16, fixed_width: u16) -> u16 {
 }
 
 fn build_column_layout(area: Rect, agg_header: &str, pid_width: u16) -> Vec<Rect> {
-    let agg_len = u16::try_from(agg_header.chars().count())
-        .unwrap_or(10)
-        .max(10);
+    let agg_len = u16::try_from(UnicodeWidthStr::width(agg_header))
+        .unwrap_or(11)
+        .max(11);
     // Everything except COMM and the meter, including the six one-cell gaps between columns.
     let fixed = pid_width + OWN_COL_WIDTH + agg_len + PCT_COL_WIDTH + CHILDREN_COL_WIDTH + 6;
     Layout::horizontal([
@@ -1364,10 +1583,9 @@ mod screens {
             .iter()
             .find(|line| line.contains("METER"))
             .expect("header line");
-        // Column (in cells) of the METER title; every glyph in these lines is single-width.
         let meter_x = header
             .find("METER")
-            .map(|byte| header[..byte].chars().count())
+            .map(|byte| unicode_width::UnicodeWidthStr::width(&header[..byte]))
             .unwrap_or(0);
         let empty = app.theme.color(app.theme.meter_bg);
         (meter_x..meter_x + 18)
@@ -1376,7 +1594,7 @@ mod screens {
                     u16::try_from(*x).unwrap_or(0),
                     u16::try_from(y).unwrap_or(0),
                 )];
-                cell.symbol() == "■" && cell.fg != empty
+                matches!(cell.symbol(), "■" | "#") && cell.fg != empty
             })
             .count()
     }
@@ -1394,7 +1612,7 @@ mod screens {
 
             assert!(lines[1].contains("agg rollup") && lines[1].contains("used 2.0 GiB / 4.0 GiB"));
             assert!(
-                lines.iter().any(|l| l.contains("FOOTPRINT Σ~")),
+                lines.iter().any(|l| l.contains("FOOTPRINT Σ~↓")),
                 "approx header"
             );
 
@@ -1419,6 +1637,21 @@ mod screens {
             assert!(body("build").contains("50.0 MiB") && !body("build").contains('~'));
             assert!(body("daemon").contains("500.0 MiB") && !body("daemon").contains('~'));
             assert!(body("launchd").contains("28.1%"), "% of 4 GiB RAM");
+
+            if symbols == GraphSymbolSetting::Tty {
+                assert!(
+                    !lines.iter().any(|l| l.contains('■')),
+                    "Tty mode must use '#'/'-' instead of '■'"
+                );
+                assert!(lines
+                    .iter()
+                    .any(|l| l.contains("used 2.0 GiB / 4.0 GiB #") && l.contains("- 50%")));
+                assert!(body("launchd").contains("##################"));
+                assert!(body("shell").contains("#########---------"));
+                assert!(body("plugin").contains("------------------"));
+            } else {
+                assert!(lines.iter().any(|l| l.contains('■')));
+            }
         }
     }
 
@@ -1440,7 +1673,9 @@ mod screens {
         assert_eq!(body("daemon").matches("500.0 MiB").count(), 1, "own only");
         assert!(body("daemon").contains(" 0 B "), "flat Σ of a leaf is 0");
         assert!(body("launchd").starts_with("[-] launchd"));
-        assert!(body("plugin").starts_with("│  │  └─ plugin"));
+        assert!(body("build").starts_with("│  ├─ build"));
+        assert!(body("editor").starts_with("│  └─ [-] editor"));
+        assert!(body("plugin").starts_with("│     └─ plugin"));
     }
 
     #[test]
@@ -1959,5 +2194,448 @@ mod screens {
                 && help_bar.contains(&"█"),
             "unexpected Help scrollbar glyphs: {help_bar:?}"
         );
+    }
+
+    #[test]
+    fn single_root_and_multi_root_tree_connectors_render_accurately() {
+        let mk_proc = |pid, ppid, comm: &str, mib: u64| ProcRec {
+            pid,
+            ppid,
+            comm: comm.into(),
+            mem: MemSet {
+                rss: mib * MIB,
+                ..MemSet::default()
+            },
+        };
+
+        // 1) Sole root launchd -> edge + code -> helper + gpu -> leaf.
+        let mut single_root = App::with_snapshot(
+            Snapshot {
+                procs: vec![
+                    mk_proc(1, 0, "launchd", 10),
+                    mk_proc(2, 1, "edge", 400),
+                    mk_proc(3, 2, "helper", 300),
+                    mk_proc(4, 3, "leaf", 200),
+                    mk_proc(5, 2, "gpu", 100),
+                    mk_proc(6, 1, "code", 50),
+                ],
+                total_mem: 4096 * MIB,
+                used_mem: 1024 * MIB,
+            },
+            UiSettings::default(),
+        );
+        let (lines, _) = render_sized(&mut single_root, 100, 20);
+        assert!(row_of(&lines, "launchd").1.starts_with("[-] launchd"));
+        assert!(row_of(&lines, "edge").1.starts_with("├─ [-] edge"));
+        assert!(row_of(&lines, "helper").1.starts_with("│  ├─ [-] helper"));
+        assert!(row_of(&lines, "leaf").1.starts_with("│  │  └─ leaf"));
+        assert!(row_of(&lines, "gpu").1.starts_with("│  └─ gpu"));
+        assert!(row_of(&lines, "code").1.starts_with("└─ code"));
+
+        // 2) Multi-root: non-last root_a has last child `└─ [-] child` with grandchild.
+        let mut multi_root = App::with_snapshot(
+            Snapshot {
+                procs: vec![
+                    mk_proc(1, 0, "root_a", 0),
+                    mk_proc(2, 1, "first_child", 100),
+                    mk_proc(3, 2, "first_gc", 100),
+                    mk_proc(4, 1, "child", 50),
+                    mk_proc(5, 4, "grandchild", 50),
+                    mk_proc(6, 0, "root_b", 100),
+                ],
+                total_mem: 4096 * MIB,
+                used_mem: 512 * MIB,
+            },
+            UiSettings::default(),
+        );
+        let (lines, _) = render_sized(&mut multi_root, 100, 20);
+        assert!(row_of(&lines, "root_a").1.starts_with("[-] root_a"));
+        assert!(row_of(&lines, "first_child")
+            .1
+            .starts_with("├─ [-] first_child"));
+        assert!(row_of(&lines, "first_gc").1.starts_with("│  └─ first_gc"));
+        assert!(row_of(&lines, "child").1.starts_with("└─ [-] child"));
+        assert!(
+            row_of(&lines, "grandchild")
+                .1
+                .starts_with("   └─ grandchild"),
+            "unexpected continuation under └─ child: {}",
+            row_of(&lines, "grandchild").1
+        );
+        assert!(row_of(&lines, "root_b").1.starts_with("root_b"));
+    }
+
+    #[test]
+    fn selected_zero_meter_gradient_cells_and_no_color_ascii_meters() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        let (lines, buffer) = render(&mut app);
+        let header = lines.iter().find(|l| l.contains("METER")).expect("header");
+        let meter_x =
+            unicode_width::UnicodeWidthStr::width(&header[..header.find("METER").unwrap()]) as u16;
+
+        // Non-selected `shell` (9 filled cells out of 18) uses per-cell positional gradient.
+        let (shell_y, _) = row_of(&lines, "shell");
+        let shell_y = shell_y as u16;
+        let first_fg = buffer[(meter_x, shell_y)].fg;
+        let ninth_fg = buffer[(meter_x + 8, shell_y)].fg;
+        assert_ne!(
+            first_fg, ninth_fg,
+            "expected positional gradient across filled meter cells"
+        );
+        assert_eq!(
+            buffer[(meter_x + 9, shell_y)].fg,
+            app.theme.color(app.theme.meter_bg)
+        );
+
+        // Move selection to `plugin` (row 3: launchd, shell, editor, plugin), which has 0 B~ (0%).
+        for _ in 0..3 {
+            app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let (lines, buffer) = render(&mut app);
+        let (plugin_y, _) = row_of(&lines, "plugin");
+        assert_eq!(
+            filled_meter_cells(&app, &buffer, &lines, plugin_y),
+            0,
+            "selected 0% row must show 0 filled meter cells"
+        );
+        let plugin_y = plugin_y as u16;
+        let selected_bg = app.theme.color(app.theme.selected_bg);
+        let meter_bg = app.theme.color(app.theme.meter_bg);
+        for x in meter_x..meter_x + 18 {
+            assert_eq!(buffer[(x, plugin_y)].bg, selected_bg);
+            assert_eq!(buffer[(x, plugin_y)].fg, meter_bg);
+        }
+
+        // `no_color = true` switches meters to '#' / '-' even when graph_symbol is Braille.
+        app.no_color = true;
+        let (nc_lines, _) = render(&mut app);
+        assert!(!nc_lines.iter().any(|l| l.contains('■')));
+        assert!(nc_lines
+            .iter()
+            .any(|l| l.contains("used 2.0 GiB / 4.0 GiB #") && l.contains("- 50%")));
+        assert!(row_of(&nc_lines, "launchd")
+            .1
+            .contains("##################"));
+        assert!(row_of(&nc_lines, "shell").1.contains("#########---------"));
+        assert!(row_of(&nc_lines, "plugin").1.contains("------------------"));
+    }
+
+    #[test]
+    fn eleven_char_approx_values_keep_tilde_and_active_sort_header_shows_arrow_and_hi_fg() {
+        use crate::model::SortBy;
+
+        // 1_048_000 bytes formats as "1023.4 KiB" (10 chars); unknown child / own makes it
+        // "1023.4 KiB~" (11 chars) in OWN and <MEM> Σ.
+        let snapshot = Snapshot {
+            procs: vec![
+                ProcRec {
+                    pid: 1,
+                    ppid: 0,
+                    comm: "parent".into(),
+                    mem: MemSet {
+                        rss: 1_048_000,
+                        footprint: Some(1_048_000),
+                        approximate: true,
+                        ..MemSet::default()
+                    },
+                },
+                ProcRec {
+                    pid: 2,
+                    ppid: 1,
+                    comm: "child_unknown".into(),
+                    mem: MemSet {
+                        rss: 0,
+                        footprint: None,
+                        ..MemSet::default()
+                    },
+                },
+            ],
+            total_mem: 4096 * MIB,
+            used_mem: 512 * MIB,
+        };
+        let mut app = App::with_snapshot(
+            snapshot,
+            UiSettings {
+                mem_kind: MemKind::Footprint,
+                truecolor: crate::ui::theme::TruecolorMode::On,
+                ..UiSettings::default()
+            },
+        );
+        // Also verify own_approximate (11-char OWN "1023.4 KiB~") via Flat mode on parent or direct DisplayRow.
+        let (lines, _) = render_sized(&mut app, 100, 16);
+        let parent_row = row_of(&lines, "parent").1;
+        assert!(
+            parent_row.contains("1023.4 KiB~"),
+            "11-char Σ clipped '~': {parent_row}"
+        );
+
+        // Verify both OWN (width 11) and shortest header `RSS Σ` (min agg_len 11) render a full
+        // 11-char `"1023.4 KiB~"` value in TestBackend without clipping the trailing `~`.
+        let mut rss_app = App::with_snapshot(
+            Snapshot {
+                procs: vec![ProcRec {
+                    pid: 1,
+                    ppid: 0,
+                    comm: "worker".into(),
+                    mem: MemSet {
+                        rss: 1_048_000,
+                        ..MemSet::default()
+                    },
+                }],
+                total_mem: 4096 * MIB,
+                used_mem: 512 * MIB,
+            },
+            UiSettings {
+                mem_kind: MemKind::Rss,
+                sort_by: SortBy::Comm,
+                ..UiSettings::default()
+            },
+        );
+        let mut term = Terminal::new(TestBackend::new(80, 5)).expect("terminal");
+        term.draw(|frame| {
+            let row_area = ratatui::layout::Rect::new(1, 2, 78, 1);
+            let cols = super::build_column_layout(row_area, "RSS Σ", 5);
+            let rects = super::data_column_rects(&cols);
+            assert_eq!(rects[2].width, 11);
+            assert_eq!(rects[3].width, 11);
+            let drow = crate::ui::app::DisplayRow {
+                pid: 1,
+                comm: "worker".into(),
+                own: 1_048_000,
+                own_approximate: true,
+                aggregated: 1_048_000,
+                aggregated_approximate: true,
+                child_count: 0,
+                tree_prefix: String::new(),
+                toggle_marker: None,
+            };
+            super::render_row_cells(frame, &drow, &rects, &rss_app, 1_048_000, false);
+        })
+        .expect("draw");
+        let rendered_row: String = (0..80)
+            .map(|x| term.backend().buffer()[(x, 2)].symbol().to_owned())
+            .collect();
+        assert_eq!(
+            rendered_row.matches("1023.4 KiB~").count(),
+            2,
+            "expected unclipped '1023.4 KiB~' in both OWN and RSS Σ: {rendered_row:?}"
+        );
+        let _ = &mut rss_app;
+
+        // Active sort header shows ↓/↑ and hi_fg across all SortBy variants.
+        let hi_fg = app.theme.color(app.theme.hi_fg);
+        let title_fg = app.theme.color(app.theme.title);
+        for (sort_by, sort_desc, expected_token, inactive_token) in [
+            (SortBy::Aggregated, true, "FOOTPRINT Σ~↓", "COMM"),
+            (SortBy::Aggregated, false, "FOOTPRINT Σ~↑", "OWN"),
+            (SortBy::Own, true, "OWN↓", "PID"),
+            (SortBy::Own, false, "OWN↑", "COMM"),
+            (SortBy::Pid, false, "PID↑", "OWN"),
+            (SortBy::Comm, false, "COMM↑", "PID"),
+            (SortBy::Comm, true, "COMM↓", "OWN"),
+        ] {
+            app.sort_by = sort_by;
+            app.sort_desc = sort_desc;
+            let (hdr_lines, hdr_buf) = render_sized(&mut app, 100, 16);
+            let (hdr_y, hdr_line) = hdr_lines
+                .iter()
+                .enumerate()
+                .find(|(_, l)| l.contains("METER"))
+                .expect("header row");
+            assert!(
+                hdr_line.contains(expected_token),
+                "{sort_by:?} desc={sort_desc} missing {expected_token:?} in {hdr_line:?}"
+            );
+            let active_x = unicode_width::UnicodeWidthStr::width(
+                &hdr_line[..hdr_line.find(expected_token).unwrap()],
+            ) as u16;
+            assert_eq!(hdr_buf[(active_x, hdr_y as u16)].fg, hi_fg);
+
+            let inactive_x = unicode_width::UnicodeWidthStr::width(
+                &hdr_line[..hdr_line.find(inactive_token).unwrap()],
+            ) as u16;
+            assert_eq!(hdr_buf[(inactive_x, hdr_y as u16)].fg, title_fg);
+        }
+    }
+
+    #[test]
+    fn responsive_status_bar_mem_box_zero_meter_empty_notice_and_cjk_comm() {
+        use crate::ui::app::AppMode;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use unicode_width::UnicodeWidthStr;
+
+        // 1) 80x24 status bar keeps `filter: chrome█` visible and never clips mid-word.
+        let mut app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        app.on_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        for ch in "chrome".chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(app.mode, AppMode::FilterInput);
+        let (lines_80, buf_80) = render_sized(&mut app, 80, 24);
+        assert!(
+            lines_80[1].contains("filter: chrome█"),
+            "filter prompt clipped on 80x24: {:?}",
+            lines_80[1]
+        );
+        let fx =
+            UnicodeWidthStr::width(&lines_80[1][..lines_80[1].find("filter:").unwrap()]) as u16;
+        assert_eq!(buf_80[(fx, 1)].fg, app.theme.color(app.theme.hi_fg));
+
+        // Left-crop when filter input alone exceeds status_area.width (width 20 -> status width 18).
+        for ch in "_very_long_query_tail".chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        let (narrow_lines, _) = render_sized(&mut app, 20, 10);
+        assert!(
+            narrow_lines[1].contains("filter: …") && narrow_lines[1].contains("tail█"),
+            "expected left-cropped filter keeping cursor visible, got {:?}",
+            narrow_lines[1]
+        );
+
+        // Across widths 12..=100 in Normal mode, every kept segment is an intact whole segment.
+        let valid_segments = [
+            "7 procs",
+            "mem FOOTPRINT",
+            "agg rollup",
+            "sort agg↓",
+            "update 2000ms",
+            "used 2.0 GiB / 4.0 GiB",
+        ];
+        let mut normal_app = synthetic_app(AggMode::Rollup, GraphSymbolSetting::Braille, None);
+        for w in 12..=100 {
+            let (w_lines, _) = render_sized(&mut normal_app, w, 10);
+            let inner_status = w_lines[1]
+                .strip_prefix('│')
+                .and_then(|s| s.strip_suffix('│'))
+                .unwrap_or(&w_lines[1])
+                .trim();
+            if !inner_status.is_empty() {
+                for part in inner_status.split("  ") {
+                    assert!(
+                        valid_segments.contains(&part),
+                        "width {w} produced mid-word clipped segment {part:?} in {inner_status:?}"
+                    );
+                }
+            }
+        }
+
+        // 2) `render_mem_box` has no double space before `50%` when `meter_width == 0`.
+        let (mem_narrow_lines, _) = render_sized(&mut normal_app, 52, 24);
+        let summary_row = mem_narrow_lines
+            .iter()
+            .find(|l| l.contains("Σ FOOTPRINT"))
+            .expect("mem summary row");
+        assert!(
+            summary_row.contains("used 2.0 GiB / 4.0 GiB 50%")
+                && !summary_row.contains("4.0 GiB  50%"),
+            "double space in zero-meter mem summary: {summary_row:?}"
+        );
+
+        // 3) Zero-match filter shows centered inactive_fg notice; empty snapshot shows "no processes".
+        let mut unmatched = synthetic_app(
+            AggMode::Rollup,
+            GraphSymbolSetting::Braille,
+            Some("zzzz_none"),
+        );
+        let (empty_lines, empty_buf) = render_sized(&mut unmatched, 80, 24);
+        let (notice_y, notice_line) = empty_lines
+            .iter()
+            .enumerate()
+            .find(|(_, l)| l.contains("no matching processes (press c to clear)"))
+            .expect("missing zero-match notice");
+        let nx =
+            UnicodeWidthStr::width(&notice_line[..notice_line.find("no matching").unwrap()]) as u16;
+        assert_eq!(
+            empty_buf[(nx, notice_y as u16)].fg,
+            unmatched.theme.color(unmatched.theme.inactive_fg)
+        );
+
+        let mut blank_snap = App::with_snapshot(
+            Snapshot {
+                procs: Vec::new(),
+                total_mem: 1024,
+                used_mem: 0,
+            },
+            UiSettings::default(),
+        );
+        let (blank_lines, _) = render_sized(&mut blank_snap, 80, 16);
+        assert!(blank_lines.iter().any(|l| l.contains("no processes")));
+
+        // 4) CJK & emoji COMM names align numeric columns and truncate cleanly with `…`.
+        let mut cjk_app = App::with_snapshot(
+            Snapshot {
+                procs: vec![
+                    ProcRec {
+                        pid: 10,
+                        ppid: 0,
+                        comm: "日本語プロセス".into(),
+                        mem: MemSet {
+                            rss: 300 * MIB,
+                            ..MemSet::default()
+                        },
+                    },
+                    ProcRec {
+                        pid: 20,
+                        ppid: 0,
+                        comm: "非常に長い日本語のプロセス名テスト表示確認".into(),
+                        mem: MemSet {
+                            rss: 200 * MIB,
+                            ..MemSet::default()
+                        },
+                    },
+                    ProcRec {
+                        pid: 30,
+                        ppid: 0,
+                        comm: "ascii_worker".into(),
+                        mem: MemSet {
+                            rss: 100 * MIB,
+                            ..MemSet::default()
+                        },
+                    },
+                ],
+                total_mem: 1024 * MIB,
+                used_mem: 600 * MIB,
+            },
+            UiSettings::default(),
+        );
+        let (cjk_lines, cjk_buf) = render_sized(&mut cjk_app, 80, 14);
+        let hdr_y = cjk_lines
+            .iter()
+            .position(|l| l.contains("CHILDREN"))
+            .expect("header") as u16;
+        // Reconstruct terminal-rendered rows from Buffer (advancing by glyph display width so
+        // ratatui's trailing continuation cells after 2-col glyphs are skipped just like Crossterm).
+        let rendered_line = |y: u16| -> String {
+            let mut x = 0_u16;
+            let mut out = String::new();
+            while x < 80 {
+                let sym = cjk_buf[(x, y)].symbol();
+                out.push_str(sym);
+                let step = u16::try_from(UnicodeWidthStr::width(sym))
+                    .unwrap_or(1)
+                    .max(1);
+                x = x.saturating_add(step);
+            }
+            out
+        };
+        let row1 = rendered_line(hdr_y + 1);
+        let row2 = rendered_line(hdr_y + 2);
+        let row3 = rendered_line(hdr_y + 3);
+        assert_eq!(UnicodeWidthStr::width(row1.as_str()), 80);
+        assert_eq!(UnicodeWidthStr::width(row2.as_str()), 80);
+        assert_eq!(UnicodeWidthStr::width(row3.as_str()), 80);
+        assert!(
+            row2.contains('…'),
+            "expected overflowing CJK COMM to truncate with '…': {row2:?}"
+        );
+        // PID column right edge aligns at identical display column across CJK, truncated CJK, and ASCII rows.
+        let pid_end_col = |line: &str, pid_str: &str| -> usize {
+            let idx = line.find(pid_str).expect("pid") + pid_str.len();
+            UnicodeWidthStr::width(&line[..idx])
+        };
+        assert_eq!(pid_end_col(&row1, " 10 "), pid_end_col(&row3, " 30 "));
+        assert_eq!(pid_end_col(&row2, " 20 "), pid_end_col(&row3, " 30 "));
     }
 }

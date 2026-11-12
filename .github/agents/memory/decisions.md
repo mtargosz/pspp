@@ -188,3 +188,18 @@ Per-agent models set in profile frontmatter:
   - Added `.github/prompts/implement-review.prompt.md` (`/implement-review`) and seeded M24–M29 from
     `prompts/pspp_review_2_prompt.md` into `progress.md` for immediate pickup. *User confirmed.*
 - **`.github/_workflows/ci.yml` kept underscored** (disabled on GitHub) per user preference.
+
+## 2026-11-12 — M25 (review 2 UI polish: meters, headers, status priority, Unicode width)
+
+- **Meter glyphs & selection styling** (refines M22): Colour modes (`Braille`/`Block` without `NO_COLOR`)
+  use positional gradient `graph::meter_spans_styled` (`■` filled vs `meter_bg` `■` empty, preserving fill
+  proportions on `selected_bg` for the selected row so `0%` never renders solid white), whereas
+  `GraphSymbols::Tty` and non-empty `NO_COLOR` use distinct 7-bit ASCII glyphs (`#` filled, `-` empty) in
+  both table meters and the `mem` box summary meter.
+- **Column widths & active sort headers**: `OWN` and `<MEM> Σ` floor at 11 cells (`1023.4 KiB~` unclipped),
+  and the active sortable column header renders `↓`/`↑` in `hi_fg`.
+- **Priority-packed status bar**: Status segments pack by priority (`filter` > `procs` > `used` > `mem` >
+  `agg` > `sort` > `update`) and drop cleanly at segment boundaries on narrow screens so `filter: <input>█`
+  is never clipped off-screen on 80-column terminals.
+- **Unicode display width**: Terminal column layout (`draw`, `help`, `query`) measures cell width via
+  `unicode-width` (`UnicodeWidthStr`/`UnicodeWidthChar`) and truncates overflowing `COMM` cells with `…`.

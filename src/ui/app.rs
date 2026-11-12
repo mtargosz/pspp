@@ -6,6 +6,7 @@ use crossterm::event::{
     KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::Rect;
+use unicode_width::UnicodeWidthStr;
 
 use crate::collect::{self, Collector, Snapshot};
 use crate::config;
@@ -307,6 +308,7 @@ pub struct App {
     pub clock_format: String,
     pub background_update: bool,
     pub force_tty: bool,
+    pub(crate) no_color: bool,
     pub mode: AppMode,
     pub should_quit: bool,
     pub last_tick_at: Instant,
@@ -365,6 +367,7 @@ impl App {
     pub fn from_settings(settings: UiSettings) -> Self {
         let first = collect::take_snapshot(settings.mem_kind);
         let mut app = Self::with_snapshot(first, settings);
+        app.no_color = theme::no_color_from_env(std::env::var("NO_COLOR").ok().as_deref());
         app.collector = Some(Collector::spawn());
         app
     }
@@ -396,6 +399,7 @@ impl App {
             clock_format: settings.clock_format.clone(),
             background_update: settings.background_update,
             force_tty: settings.force_tty,
+            no_color: false,
             mem_history: History::default(),
             graph_symbol: settings.graph_symbol,
             mode: AppMode::Normal,
@@ -501,6 +505,19 @@ impl App {
 
     pub fn resolved_graph_symbols(&self) -> GraphSymbols {
         self.graph_symbol.resolve(self.force_tty)
+    }
+
+    /// Whether meters should use ASCII `'#'`/`'-'` glyphs instead of `'■'`.
+    pub fn ascii_meters(&self) -> bool {
+        self.resolved_graph_symbols() == GraphSymbols::Tty || self.no_color
+    }
+
+    pub fn sort_by(&self) -> SortBy {
+        self.sort_by
+    }
+
+    pub fn sort_desc(&self) -> bool {
+        self.sort_desc
     }
 
     /// Σ of the selected memory kind over all processes. This can exceed physical RAM (shared
@@ -1592,13 +1609,19 @@ fn build_display_rows(
     for visible_row in visible {
         ancestor_last.truncate(visible_row.depth);
 
-        let continuation_depth = visible_row.depth.saturating_sub(1);
+        // Depth-0 roots have no `├─`/`└─` connector column, so continuation bars only inspect
+        // ancestors at depths >= 1.
+        let ancestor_slice = if visible_row.depth > 1 && ancestor_last.len() >= visible_row.depth {
+            ancestor_last.get(1..visible_row.depth).unwrap_or(&[])
+        } else {
+            &[]
+        };
         let (prefix, marker) = build_tree_prefix(
             visible_row.depth,
             visible_row.is_last_child,
             visible_row.has_children,
             expanded.contains(&visible_row.pid),
-            &ancestor_last[..continuation_depth],
+            ancestor_slice,
         );
 
         let aggregate = aggregates.get(&visible_row.pid);
@@ -1643,9 +1666,9 @@ pub fn build_tree_prefix(
     }
 
     let marker = if has_children {
-        let start = prefix.chars().count();
+        let start = UnicodeWidthStr::width(prefix.as_str());
         prefix.push_str(marker_text);
-        let end = prefix.chars().count();
+        let end = UnicodeWidthStr::width(prefix.as_str());
         prefix.push(' ');
         Some(start..end)
     } else {
@@ -2376,6 +2399,66 @@ mod tests {
         let prefixes: Vec<&str> = app.rows().iter().map(|r| r.tree_prefix.as_str()).collect();
         // launchd -> shell -> target; `other` (a later sibling of shell) is filtered out.
         assert_eq!(prefixes, vec!["[-] ", "└─ [-] ", "   └─ "]);
+    }
+
+    #[test]
+    fn single_root_four_level_tree_draws_continuation_bars_under_non_last_children() {
+        // Sole root launchd (is_last = true at depth 0) -> edge + code -> helper + gpu -> leaf.
+        let app = synthetic_app(&[
+            (1, 0, "launchd", 10),
+            (2, 1, "edge", 400),
+            (3, 2, "helper", 300),
+            (4, 3, "leaf", 200),
+            (5, 2, "gpu", 100),
+            (6, 1, "code", 50),
+        ]);
+        let rendered: Vec<String> = app
+            .rows()
+            .iter()
+            .map(|r| format!("{}{}", r.tree_prefix, r.comm))
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "[-] launchd",
+                "├─ [-] edge",
+                "│  ├─ [-] helper",
+                "│  │  └─ leaf",
+                "│  └─ gpu",
+                "└─ code",
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_root_non_last_root_last_child_uses_blank_continuation_for_grandchildren() {
+        // Two roots: root_a (is_last = false, rollup 300) and root_b (rollup 100).
+        // Under root_a: first_child (is_last = false, rollup 200) -> first_gc,
+        // and child (is_last = true, rollup 100) -> grandchild.
+        let app = synthetic_app(&[
+            (1, 0, "root_a", 0),
+            (2, 1, "first_child", 100),
+            (3, 2, "first_gc", 100),
+            (4, 1, "child", 50),
+            (5, 4, "grandchild", 50),
+            (6, 0, "root_b", 100),
+        ]);
+        let rendered: Vec<String> = app
+            .rows()
+            .iter()
+            .map(|r| format!("{}{}", r.tree_prefix, r.comm))
+            .collect();
+        assert_eq!(
+            rendered,
+            vec![
+                "[-] root_a",
+                "├─ [-] first_child",
+                "│  └─ first_gc",
+                "└─ [-] child",
+                "   └─ grandchild",
+                "root_b",
+            ]
+        );
     }
 
     fn snapshot_of(pids: &[i32]) -> Snapshot {
