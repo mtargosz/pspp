@@ -216,3 +216,17 @@ Per-agent models set in profile frontmatter:
     (`ESRCH` + `kill(pid, 0)` `ESRCH`), and reports exact `0` for unreaped `SZOMB` zombies.
   - `ProcTree::build` treats both `pid <= 0` and POSIX `ppid <= 0` as top-level roots (`parent = None`),
     keeping `kernel_task` (`pid = 0`) and `launchd` (`pid = 1, ppid = 0`) as separate roots.
+
+## 2026-11-12 — M27 (`save_on_exit = false` persistence, `-r/--reverse` & natural sort, JSON approx fields)
+
+- **Turning `save_on_exit` off persists `save_on_exit = false` alone** (refines M16): When
+  `initial.save_on_exit && !updated.save_on_exit`, `pspp.conf` is updated with `save_on_exit = false`
+  without writing transient session edits; when `updated.save_on_exit` is `true`, `(sort_by, sort_reverse)`
+  is diffed as an atomic pair so CLI `--sort`/`-r` overrides never leave mixed sort state on disk.
+- **Natural sort direction & `-r, --reverse` flag**: `--sort <key>` on the CLI and pressing `s` in TUI
+  `Normal` mode select `SortBy::natural_desc()` (`agg`/`own` descending, `pid`/`comm` ascending), matching
+  column-header clicks and query mode; `-r, --reverse` applies to both TUI and query mode without forcing
+  query mode. Simultaneous `PATTERN` and `-f/--filter` is rejected by clap (exit `2`).
+- **JSON schema enriched with `own_approximate` and `total_approximate`**: Rows carry `own_approximate`
+  alongside aggregated `approximate`, and the top-level object carries `total_approximate`. `--pid` walks
+  `ProcTree::child_pids` directly so subtree queries match `ProcTree` root/cycle semantics.

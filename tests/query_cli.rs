@@ -40,6 +40,20 @@ fn query_json_output_is_parseable_and_non_empty() {
 
     assert!(!rows.is_empty(), "rows should not be empty");
     assert!(total > 0, "total should be positive");
+    assert!(
+        parsed["total_approximate"].is_boolean(),
+        "json output should contain boolean total_approximate: {parsed}"
+    );
+    for row in rows {
+        assert!(
+            row["own_approximate"].is_boolean(),
+            "every json row should contain boolean own_approximate: {row}"
+        );
+        assert!(
+            row["approximate"].is_boolean(),
+            "every json row should contain boolean approximate: {row}"
+        );
+    }
 }
 
 #[test]
@@ -130,6 +144,7 @@ fn top_zero_is_rejected_and_unmatched_json_exits_one() {
     let parsed: Value =
         serde_json::from_slice(&output.stdout).expect("json should still be emitted");
     assert_eq!(parsed["rows"].as_array().map(Vec::len), Some(0));
+    assert_eq!(parsed["total_approximate"].as_bool(), Some(false));
 }
 
 #[test]
@@ -181,4 +196,59 @@ fn query_mode_ignores_a_saved_config() {
     let parsed: Value = serde_json::from_slice(&output.stdout).expect("valid json");
     assert_eq!(parsed["agg"], "rollup");
     assert_eq!(parsed["mem"], "rss");
+}
+
+#[test]
+fn pattern_and_filter_conflict_exits_with_usage_error() {
+    let output = run(&["chrome", "-f", "firefox"]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "passing both PATTERN and -f should exit 2, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = run(&["--query", "chrome", "--filter", "firefox"]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "passing both PATTERN and --filter should exit 2, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn reverse_flag_sorts_pids_descending_in_query_mode() {
+    let parse_pids = |stdout: &str| -> Vec<i32> {
+        stdout
+            .lines()
+            .filter_map(|line| line.split_whitespace().next()?.parse::<i32>().ok())
+            .collect()
+    };
+
+    let desc_output = run(&["--query", "--sort", "pid", "-r", "--top", "3"]);
+    assert!(
+        desc_output.status.success(),
+        "expected success, stderr: {}",
+        String::from_utf8_lossy(&desc_output.stderr)
+    );
+    let desc_stdout = String::from_utf8_lossy(&desc_output.stdout);
+    let desc_pids = parse_pids(&desc_stdout);
+    assert!(
+        desc_pids.len() >= 2 && desc_pids.len() <= 3,
+        "expected 2..=3 rows, got {desc_pids:?}\n{desc_stdout}"
+    );
+    assert!(
+        desc_pids.windows(2).all(|pair| pair[0] > pair[1]),
+        "expected strictly descending PIDs, got {desc_pids:?}\n{desc_stdout}"
+    );
+
+    let asc_output = run(&["--query", "--sort", "pid", "--top", "3"]);
+    assert!(asc_output.status.success());
+    let asc_stdout = String::from_utf8_lossy(&asc_output.stdout);
+    let asc_pids = parse_pids(&asc_stdout);
+    assert!(
+        asc_pids.windows(2).all(|pair| pair[0] < pair[1]),
+        "expected strictly ascending PIDs without -r, got {asc_pids:?}\n{asc_stdout}"
+    );
 }

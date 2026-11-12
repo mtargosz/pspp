@@ -1157,7 +1157,10 @@ impl App {
             OptionKey::SaveOnExit => {
                 self.save_on_exit = !self.save_on_exit;
             }
-            OptionKey::SortKey => self.cycle_sort_key(delta),
+            OptionKey::SortKey => {
+                self.sort_by = cycle_sort_key_value(self.sort_by, delta);
+                self.rebuild_rows();
+            }
             OptionKey::SortReverse => self.reverse_sort(),
             OptionKey::ColorTheme => self.cycle_color_theme(delta),
             OptionKey::ThemeBackground => {
@@ -1360,6 +1363,7 @@ impl App {
 
     fn cycle_sort_key(&mut self, delta: isize) {
         self.sort_by = cycle_sort_key_value(self.sort_by, delta);
+        self.sort_desc = self.sort_by.natural_desc();
         self.rebuild_rows();
     }
 
@@ -1407,7 +1411,7 @@ impl App {
         } else {
             self.sort_by = key;
             // Text and PID columns read naturally ascending; memory columns largest-first.
-            self.sort_desc = matches!(key, SortBy::Aggregated | SortBy::Own);
+            self.sort_desc = key.natural_desc();
             self.rebuild_rows();
         }
         true
@@ -2048,6 +2052,40 @@ mod tests {
         // Clicks outside every header rect fall through to the table.
         click(&mut app, 70, 0);
         assert_eq!(app.sort_by, SortBy::Comm);
+    }
+
+    #[test]
+    fn pressing_s_cycles_sort_keys_with_natural_default_direction() {
+        let mut app = filter_app();
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Aggregated, true));
+        assert_eq!(pids(&app)[0], 1); // launchd agg=100 > stray agg=50
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Own, true));
+        assert_eq!(pids(&app)[0], 5); // stray own=50 > launchd own=10
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Pid, false));
+        assert_eq!(pids(&app), vec![1, 2, 3, 4, 5]);
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Comm, false));
+        // launchd < stray; under launchd, other (4) < shell (2).
+        assert_eq!(pids(&app), vec![1, 4, 2, 3, 5]);
+
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Aggregated, true));
+
+        // In Options, SortKey stays independent of SortReverse.
+        app.mode = AppMode::Options;
+        app.sort_desc = true;
+        app.option_selected = OPTION_KEYS
+            .iter()
+            .position(|key| *key == OptionKey::SortKey)
+            .expect("sort_key option");
+        press(&mut app, KeyCode::Right); // Own
+        press(&mut app, KeyCode::Right); // Pid
+        assert_eq!((app.sort_by, app.sort_desc), (SortBy::Pid, true));
     }
 
     fn wheel(app: &mut App, kind: MouseEventKind) {

@@ -1,7 +1,7 @@
 //! Non-interactive query execution, size parsing/formatting, and table/JSON rendering.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr;
@@ -17,6 +17,7 @@ pub struct QueryOpts {
     pub agg_mode: AggMode,
     pub min_bytes: Option<u64>,
     pub sort_by: SortBy,
+    pub reverse: bool,
     pub top: Option<usize>,
     pub json: bool,
     pub base10: bool,
@@ -31,6 +32,7 @@ impl Default for QueryOpts {
             agg_mode: AggMode::Rollup,
             min_bytes: None,
             sort_by: SortBy::Aggregated,
+            reverse: false,
             top: None,
             json: false,
             base10: false,
@@ -58,6 +60,7 @@ struct JsonOutput {
     agg: &'static str,
     rows: Vec<JsonRow>,
     total: u64,
+    total_approximate: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,6 +69,7 @@ struct JsonRow {
     ppid: i32,
     comm: String,
     own: u64,
+    own_approximate: bool,
     agg: u64,
     pct: f64,
     children: usize,
@@ -133,7 +137,7 @@ fn matching_rows(tree: &ProcTree, opts: &QueryOpts) -> (Vec<RenderRow>, Total) {
         })
         .collect();
 
-    rows.sort_by(|left, right| compare_rows(left, right, opts.sort_by));
+    rows.sort_by(|left, right| compare_rows(left, right, opts.sort_by, opts.reverse));
     if let Some(top) = opts.top {
         rows.truncate(top);
     }
@@ -174,18 +178,10 @@ fn allowed_pid_set(tree: &ProcTree, pid: Option<i32>) -> HashSet<i32> {
     }
 }
 
-/// `root_pid` plus every process whose recorded `ppid` chain leads to it (cycle-safe).
+/// `root_pid` plus its descendants in `tree` (`tree.child_pids`), matching `ProcTree` semantics.
 fn collect_subtree_pids(tree: &ProcTree, root_pid: i32) -> HashSet<i32> {
     if tree.proc(root_pid).is_none() {
         return HashSet::new();
-    }
-
-    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    for proc_rec in tree.procs() {
-        children
-            .entry(proc_rec.ppid)
-            .or_default()
-            .push(proc_rec.pid);
     }
 
     let mut seen = HashSet::new();
@@ -194,9 +190,7 @@ fn collect_subtree_pids(tree: &ProcTree, root_pid: i32) -> HashSet<i32> {
         if !seen.insert(pid) {
             continue;
         }
-        if let Some(child_pids) = children.get(&pid) {
-            stack.extend(child_pids.iter().copied());
-        }
+        stack.extend(tree.child_pids(pid).iter().copied());
     }
     seen
 }
@@ -208,23 +202,15 @@ fn pattern_matches(comm: &str, lowered_pattern: Option<&str>) -> bool {
     comm.to_lowercase().contains(pattern)
 }
 
-fn compare_rows(left: &RenderRow, right: &RenderRow, sort_by: SortBy) -> Ordering {
-    match sort_by {
-        SortBy::Aggregated => right
-            .agg
-            .cmp(&left.agg)
-            .then_with(|| left.pid.cmp(&right.pid)),
-        SortBy::Own => right
-            .own
-            .cmp(&left.own)
-            .then_with(|| left.pid.cmp(&right.pid)),
+fn compare_rows(left: &RenderRow, right: &RenderRow, sort_by: SortBy, reverse: bool) -> Ordering {
+    let primary = match sort_by {
+        SortBy::Aggregated => right.agg.cmp(&left.agg),
+        SortBy::Own => right.own.cmp(&left.own),
         SortBy::Pid => left.pid.cmp(&right.pid),
-        SortBy::Comm => left
-            .comm
-            .to_lowercase()
-            .cmp(&right.comm.to_lowercase())
-            .then_with(|| left.pid.cmp(&right.pid)),
-    }
+        SortBy::Comm => left.comm.to_lowercase().cmp(&right.comm.to_lowercase()),
+    };
+    let primary = if reverse { primary.reverse() } else { primary };
+    primary.then_with(|| left.pid.cmp(&right.pid))
 }
 
 fn render_plain(rows: &[RenderRow], total: Total, opts: &QueryOpts, ram: u64) -> String {
@@ -342,6 +328,7 @@ fn render_json(rows: Vec<RenderRow>, total: Total, opts: &QueryOpts, ram: u64) -
                 ppid: row.ppid,
                 comm: row.comm,
                 own: row.own,
+                own_approximate: row.own_approximate,
                 agg: row.agg,
                 pct: pct_tenths(row.agg, ram) as f64 / 10.0,
                 children: row.children,
@@ -350,12 +337,13 @@ fn render_json(rows: Vec<RenderRow>, total: Total, opts: &QueryOpts, ram: u64) -
             })
             .collect(),
         total: total.bytes,
+        total_approximate: total.approximate,
     };
 
     match serde_json::to_string_pretty(&payload) {
         Ok(rendered) => rendered,
         Err(_) => format!(
-            r#"{{"mem":"{}","agg":"{}","rows":[],"total":0}}"#,
+            r#"{{"mem":"{}","agg":"{}","rows":[],"total":0,"total_approximate":false}}"#,
             opts.mem_kind.label().to_lowercase(),
             agg_name(opts.agg_mode)
         ),
@@ -583,6 +571,7 @@ mod tests {
             agg_mode: AggMode::Rollup,
             min_bytes: None,
             sort_by: SortBy::Pid,
+            reverse: false,
             top: None,
             json: false,
             base10: false,
@@ -772,5 +761,147 @@ mod tests {
         assert_eq!(pct_end_col(lines[2]), pct_end_col(lines[3]));
         assert_eq!(pct_end_col(lines[2]), pct_end_col(lines[4]));
         assert_eq!(pct_end_col(lines[2]), pct_end_col(lines[5]));
+    }
+
+    #[test]
+    fn reverse_option_reverses_all_sort_keys_with_deterministic_pid_tie_break() {
+        // Roots:
+        // pid 1: comm "beta",  own 10, child 2 (own 90) -> agg 100
+        // pid 2: comm "alpha", own 90, leaf             -> agg 90
+        // pid 3: comm "gamma", own 50, leaf             -> agg 50
+        // pid 4: comm "alpha", own 50, leaf             -> agg 50  (ties own/agg with 3, comm with 2)
+        let snap = snapshot(vec![
+            proc(1, 0, "beta", 10),
+            proc(2, 1, "alpha", 90),
+            proc(3, 0, "gamma", 50),
+            proc(4, 0, "alpha", 50),
+        ]);
+
+        let sorted_pids = |sort_by: SortBy, reverse: bool| -> Vec<i64> {
+            let opts = QueryOpts {
+                json: true,
+                sort_by,
+                reverse,
+                ..QueryOpts::default()
+            };
+            let parsed: Value =
+                serde_json::from_str(&run_query(snap.clone(), &opts).output).expect("json");
+            parsed["rows"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .filter_map(|row| row["pid"].as_i64())
+                .collect()
+        };
+
+        assert_eq!(sorted_pids(SortBy::Aggregated, false), vec![1, 2, 3, 4]);
+        assert_eq!(sorted_pids(SortBy::Aggregated, true), vec![3, 4, 2, 1]);
+
+        assert_eq!(sorted_pids(SortBy::Own, false), vec![2, 3, 4, 1]);
+        assert_eq!(sorted_pids(SortBy::Own, true), vec![1, 3, 4, 2]);
+
+        assert_eq!(sorted_pids(SortBy::Pid, false), vec![1, 2, 3, 4]);
+        assert_eq!(sorted_pids(SortBy::Pid, true), vec![4, 3, 2, 1]);
+
+        assert_eq!(sorted_pids(SortBy::Comm, false), vec![2, 4, 1, 3]);
+        assert_eq!(sorted_pids(SortBy::Comm, true), vec![3, 1, 2, 4]);
+    }
+
+    #[test]
+    fn collect_subtree_pids_matches_proctree_on_pid_zero_ppid_zero_and_cycles() {
+        use std::collections::HashSet;
+
+        let tree = super::ProcTree::build(snapshot(vec![
+            proc(0, 0, "kernel_task", 0),
+            proc(1, 0, "launchd", 10),
+            proc(2, 1, "child", 20),
+            proc(6, 7, "cycle-a", 6),
+            proc(7, 6, "cycle-b", 7),
+        ]));
+
+        // pid 0 is an independent root; launchd (ppid == 0) must not be treated as its child.
+        assert_eq!(super::collect_subtree_pids(&tree, 0), HashSet::from([0]));
+        assert_eq!(super::collect_subtree_pids(&tree, 1), HashSet::from([1, 2]));
+        // Cycle 6 <-> 7 is broken at min pid (6 is root, 7 is leaf child of 6).
+        assert_eq!(super::collect_subtree_pids(&tree, 6), HashSet::from([6, 7]));
+        assert_eq!(super::collect_subtree_pids(&tree, 7), HashSet::from([7]));
+    }
+
+    #[test]
+    fn json_emits_own_approximate_and_total_approximate_including_empty_matches() {
+        let unreadable = MemSet {
+            rss: None,
+            vsz: None,
+            ..MemSet::default()
+        };
+        let snap = snapshot(vec![
+            ProcRec {
+                pid: 1,
+                ppid: 0,
+                comm: "launchd".into(),
+                mem: unreadable,
+            },
+            proc(2, 1, "readable_child", 4096),
+        ]);
+
+        // Rollup: pid 1 has unreadable own (own_approximate = true) and approximate rollup;
+        // pid 2 is exact (own_approximate = false, approximate = false); total_approximate = true.
+        let rollup_json: Value = serde_json::from_str(
+            &run_query(
+                snap.clone(),
+                &QueryOpts {
+                    json: true,
+                    agg_mode: AggMode::Rollup,
+                    sort_by: SortBy::Pid,
+                    ..QueryOpts::default()
+                },
+            )
+            .output,
+        )
+        .expect("rollup json");
+        assert_eq!(rollup_json["total_approximate"], Value::Bool(true));
+        assert_eq!(rollup_json["rows"][0]["own_approximate"], Value::Bool(true));
+        assert_eq!(rollup_json["rows"][0]["approximate"], Value::Bool(true));
+        assert_eq!(
+            rollup_json["rows"][1]["own_approximate"],
+            Value::Bool(false)
+        );
+        assert_eq!(rollup_json["rows"][1]["approximate"], Value::Bool(false));
+
+        // Flat: pid 1's own is approximate, but its direct child (pid 2) is exact, so
+        // own_approximate = true while aggregated approximate = false and total_approximate = false.
+        let flat_json: Value = serde_json::from_str(
+            &run_query(
+                snap.clone(),
+                &QueryOpts {
+                    json: true,
+                    agg_mode: AggMode::Flat,
+                    sort_by: SortBy::Pid,
+                    ..QueryOpts::default()
+                },
+            )
+            .output,
+        )
+        .expect("flat json");
+        assert_eq!(flat_json["total_approximate"], Value::Bool(false));
+        assert_eq!(flat_json["rows"][0]["own_approximate"], Value::Bool(true));
+        assert_eq!(flat_json["rows"][0]["approximate"], Value::Bool(false));
+
+        // Empty match: rows = [], total = 0, total_approximate = false.
+        let unmatched_json: Value = serde_json::from_str(
+            &run_query(
+                snap,
+                &QueryOpts {
+                    json: true,
+                    pattern: Some("no-such-proc".into()),
+                    ..QueryOpts::default()
+                },
+            )
+            .output,
+        )
+        .expect("unmatched json");
+        assert_eq!(unmatched_json["rows"].as_array().map(Vec::len), Some(0));
+        assert_eq!(unmatched_json["total"], 0);
+        assert_eq!(unmatched_json["total_approximate"], Value::Bool(false));
     }
 }

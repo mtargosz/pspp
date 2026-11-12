@@ -33,7 +33,7 @@
 - [x] M24 fix(ui): clear overlays, center menu button labels, polish scrollbars and footers
 - [x] M25 fix(ui): fix ancestor tree connectors, meter styling, column widths, and responsive status/filter bar
 - [x] M26 fix(collect): accurate macOS RSS/VSZ approximation, lazy rusage, and unified Option<u64> MemSet
-- [ ] M27 fix(config,cli): persist save_on_exit=false, align sort direction, enrich JSON approx fields
+- [x] M27 fix(config,cli): persist save_on_exit=false, align sort direction, enrich JSON approx fields
 - [ ] M28 feat(ui): live filter-as-you-type, collapse/expand-all keys, force_tty fidelity, and event-loop coalescing
 - [ ] M29 docs(all): fix stale man page, option descriptions, CI path docs, and regenerate tables
 
@@ -388,6 +388,17 @@
 - Updated `ProcTree::build` so both `pid <= 0` and POSIX `ppid <= 0` resolve to top-level roots, keeping
   macOS `kernel_task` (`pid = 0`) and `launchd` (`pid = 1, ppid = 0`) disjoint.
 - Added model, macOS (`EPERM`, lazy footprint, `SZOMB`/reaped probes, worker reuse), and Linux tests; all gates green.
+
+### 2026-11-12 — coder & reviewer (M27)
+- Added `update_config_for_exit` in `src/main.rs` so toggling `save_on_exit` from `true` to `false` persists
+  `save_on_exit = false` to `pspp.conf` without writing transient session edits, and coupled `(sort_by, sort_reverse)`
+  in `apply_changed_settings_to_config`.
+- Added `-r, --reverse` CLI flag (both modes), aligned `--sort <key>` and TUI `s` cycling on `SortBy::natural_desc()`
+  (`agg`/`own` descending, `pid`/`comm` ascending), and marked `PATTERN` `conflicts_with = "filter"` (exit 2).
+- Added `own_approximate` on JSON rows and `total_approximate` on the top-level JSON object, and simplified
+  `collect_subtree_pids` to walk `ProcTree::child_pids`.
+- Added unit and CLI integration tests covering all four `save_on_exit` quadrants, coupled sort persistence,
+  `-r`, `PATTERN` + `-f` conflict, JSON approx fields, and `ProcTree`-aligned `--pid` traversal; all gates green.
 
 ## Known issues
 - Resolved 2026-11-11 (reviewer): `--top 0`, no-match exit status, TOTAL semantics. See decisions.md.

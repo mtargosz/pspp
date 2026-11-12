@@ -10,10 +10,11 @@ src/
                        - query mode iff PATTERN/--pid/--min/--top/--json/--query given OR stdout non-tty
                          (query mode never reads config; defaults rss/rollup/agg/binary)
                        - else (tty + no query args): load config, run ratatui loop via `ui::run_tui`,
-                         then save runtime settings when `save_on_exit=true`
-                       Query-only flags: [PATTERN], --pid, --min, --top, --json, --query
-                       Both modes: --mem, --agg, --sort, --base10, --update-ms (clamped), -f/--filter
-                       Config saved on exit = only fields changed in the TUI (diff vs. initial settings)
+                         then save runtime settings when `save_on_exit=true` (or persist `save_on_exit=false`
+                         alone when toggled off from `true`)
+                       Query-only flags: [PATTERN] (conflicts with -f/--filter), --pid, --min, --top, --json, --query
+                       Both modes: --mem, --agg, --sort, -r/--reverse, --base10, --update-ms (clamped), -f/--filter
+                       Config saved on exit = only fields changed in the TUI (`(sort_by, sort_reverse)` diffed as a pair)
   collect/
     mod.rs           — Snapshot API: { procs: Vec<ProcRec { pid, ppid, comm, mem: MemSet }>, total_mem, used_mem };
                        `take_snapshot(kind: MemKind)` + `make_snapshot_source()`
@@ -101,7 +102,8 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
   `total_mem()`, `used_mem()`)
   - forest from pid→ppid links; orphan/self-link/cycle-safe with synthetic root semantics
 - `enum AggMode { Rollup, Flat }` and `enum SortBy { Aggregated("agg"), Own, Pid, Comm }`: each has
-  `as_str()`, `Display`, `FromStr`, `ALL`, `Default`, and derives `clap::ValueEnum` (`AggMode::toggled()`)
+  `as_str()`, `Display`, `FromStr`, `ALL`, `Default`, and derives `clap::ValueEnum` (`AggMode::toggled()`,
+  `SortBy::natural_desc()` → `true` for `agg|own`, `false` for `pid|comm`)
 - `ProcTree::{aggregate, rollup, flat}`
   - return per-pid `AggregateRow { own, own_approximate, aggregated, aggregated_approximate, child_count, descendant_count }`
 - `ProcTree::flatten_visible(&HashSet<i32>) -> Vec<VisibleRow>`
@@ -114,15 +116,15 @@ collector snapshot → model::tree (aggregate per mode) → ui table/graphs (int
 
 - `query::QueryOpts`
   - `pattern` (case-insensitive substring on `comm`; `!` regex mode intentionally unsupported for now)
-  - `pid` subtree filter
-  - `mem_kind`, `agg_mode`, `min_bytes`, `sort_by`, `top`, `json`, `base10`
+  - `pid` subtree filter (walks `ProcTree::child_pids`)
+  - `mem_kind`, `agg_mode`, `min_bytes`, `sort_by`, `reverse`, `top`, `json`, `base10`
 - `query::run_query(Snapshot, &QueryOpts) -> QueryResult { output: String, row_count: usize }`
-  - plain table columns: `PID`, `PARENT`, `COMM`, `OWN`, `<MEM> Σ`, `CHILDREN` + final `TOTAL`
+  - plain table columns: `PID`, `PARENT`, `COMM`, `OWN`, `<MEM> Σ`, `%`, `CHILDREN` + final `TOTAL`
   - `TOTAL`/`total` counts each covered process once: rollup sums only returned rows with no returned
     ancestor; flat rows (direct children) are disjoint so all are summed. Saturating.
   - `main` exit status: 0 rows printed, 1 no matches (plain also prints `no matches` to stderr),
     2 usage/runtime error; EPIPE on stdout is success. `--top` must be ≥ 1.
-  - JSON object: `{ mem, agg, rows: [{ pid, ppid, comm, own, agg, children, descendants, approximate }], total }`
+  - JSON object: `{ mem, agg, rows: [{ pid, ppid, comm, own, own_approximate, agg, pct, children, descendants, approximate }], total, total_approximate }`
 - `query::{parse_size, format_size}`
   - parse `512K`, `100M`, `1.5G`, bytes; format binary (`KiB`) or decimal (`KB`) units
 

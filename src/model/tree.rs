@@ -70,6 +70,12 @@ impl SortBy {
     /// Order used when cycling the sort key.
     pub const ALL: [SortBy; 4] = [SortBy::Aggregated, SortBy::Own, SortBy::Pid, SortBy::Comm];
 
+    /// Whether this sort key defaults to descending order (`agg` and `own` largest-first;
+    /// `pid` and `comm` ascending).
+    pub const fn natural_desc(self) -> bool {
+        matches!(self, SortBy::Aggregated | SortBy::Own)
+    }
+
     /// Config/CLI spelling (lowercase).
     pub fn as_str(&self) -> &'static str {
         match self {

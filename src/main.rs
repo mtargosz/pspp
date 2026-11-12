@@ -17,7 +17,7 @@ use pspp::{collect, config, query, ui};
     long_about = "pspp ('ps plus plus') groups process memory by parent/child relationships.\n\
                   Mode: query mode (one-shot output) runs when PATTERN, --pid, --min, --top, --json or\n\
                   --query is given, or when stdout is not a terminal; otherwise the interactive TUI runs.\n\
-                  --mem, --agg, --sort, --base10 and --update-ms apply to whichever mode runs.\n\
+                  --mem, --agg, --sort, -r/--reverse, --base10 and --update-ms apply to whichever mode runs.\n\
                   Query mode is deterministic: it never reads pspp.conf (defaults: rss, rollup, sort agg,\n\
                   binary units). The TUI loads pspp.conf; CLI flags override it for that run only and are\n\
                   never saved.\n\n\
@@ -37,6 +37,7 @@ use pspp::{collect, config, query, ui};
 struct Cli {
     #[arg(
         value_name = "PATTERN",
+        conflicts_with = "filter",
         help = "Case-insensitive COMM substring (!regex is unsupported for now)"
     )]
     pattern: Option<String>,
@@ -76,6 +77,9 @@ struct Cli {
     )]
     sort: Option<SortBy>,
 
+    #[arg(short = 'r', long = "reverse", help = "Reverse the sort order")]
+    reverse: bool,
+
     #[arg(
         long,
         value_name = "N",
@@ -86,7 +90,7 @@ struct Cli {
 
     #[arg(
         long,
-        help = "Emit JSON ({ mem, agg, rows, total }) with raw byte counts"
+        help = "Emit JSON ({ mem, agg, rows, total, total_approximate }) with raw byte counts"
     )]
     json: bool,
 
@@ -119,8 +123,9 @@ struct Cli {
 }
 
 impl Cli {
-    /// Flags that only make sense for one-shot output. `--mem/--agg/--sort/--base10/--update-ms`
-    /// are deliberately absent: they apply to the TUI too.
+    /// Flags that only make sense for one-shot output.
+    /// `--mem/--agg/--sort/-r/--reverse/--base10/--update-ms` are deliberately absent: they apply
+    /// to the TUI too.
     fn is_query_mode_requested(&self) -> bool {
         self.pattern.is_some()
             || self.pid.is_some()
@@ -140,6 +145,7 @@ impl Cli {
             agg_mode: self.agg.unwrap_or(defaults.agg_mode),
             min_bytes: self.min,
             sort_by: self.sort.unwrap_or(defaults.sort_by),
+            reverse: self.reverse,
             top: self.top,
             json: self.json,
             base10: self.base10,
@@ -177,6 +183,16 @@ fn run_query_mode(cli: &Cli) -> Result<usize, String> {
 }
 
 fn cli_and_config_to_ui_settings(cli: &Cli, cfg: &config::Config) -> ui::UiSettings {
+    let (sort_by, base_sort_reverse) = match cli.sort {
+        Some(sort_by) => (sort_by, sort_by.natural_desc()),
+        None => (cfg.sort_key.parse().unwrap_or_default(), cfg.sort_reverse),
+    };
+    let sort_reverse = if cli.reverse {
+        !base_sort_reverse
+    } else {
+        base_sort_reverse
+    };
+
     ui::UiSettings {
         update_ms: cli.update_ms.unwrap_or(cfg.update_ms),
         mem_kind: cli
@@ -188,10 +204,8 @@ fn cli_and_config_to_ui_settings(cli: &Cli, cfg: &config::Config) -> ui::UiSetti
         graph_symbol: ui::GraphSymbolSetting::from_config(&cfg.graph_symbol),
         base10: if cli.base10 { true } else { cfg.base10 },
         save_on_exit: cfg.save_on_exit,
-        sort_by: cli
-            .sort
-            .unwrap_or_else(|| cfg.sort_key.parse().unwrap_or_default()),
-        sort_reverse: cfg.sort_reverse,
+        sort_by,
+        sort_reverse,
         color_theme: cfg.color_theme.clone(),
         theme_background: cfg.theme_background,
         truecolor: ui::theme::TruecolorMode::from_config(&cfg.truecolor),
@@ -226,10 +240,8 @@ fn apply_changed_settings_to_config(
     if current.base10 != initial.base10 {
         cfg.base10 = current.base10;
     }
-    if current.sort_by != initial.sort_by {
+    if (current.sort_by, current.sort_reverse) != (initial.sort_by, initial.sort_reverse) {
         cfg.sort_key = current.sort_by.to_string();
-    }
-    if current.sort_reverse != initial.sort_reverse {
         cfg.sort_reverse = current.sort_reverse;
     }
     if current.color_theme != initial.color_theme {
@@ -262,6 +274,24 @@ fn apply_changed_settings_to_config(
     cfg.save_on_exit = current.save_on_exit;
 }
 
+/// Updates `cfg` with changes made during the TUI session and returns whether `cfg` should be
+/// written to disk.
+fn update_config_for_exit(
+    cfg: &mut config::Config,
+    initial: &ui::UiSettings,
+    updated: &ui::UiSettings,
+) -> bool {
+    if updated.save_on_exit {
+        apply_changed_settings_to_config(cfg, initial, updated);
+        true
+    } else if initial.save_on_exit {
+        cfg.save_on_exit = false;
+        true
+    } else {
+        false
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let query_mode = cli.is_query_mode_requested() || !io::stdout().is_terminal();
@@ -272,8 +302,7 @@ fn main() -> ExitCode {
         let initial = settings.clone();
         return match ui::run_tui(settings, cli.filter.clone()) {
             Ok(updated_settings) => {
-                if updated_settings.save_on_exit {
-                    apply_changed_settings_to_config(&mut cfg, &initial, &updated_settings);
+                if update_config_for_exit(&mut cfg, &initial, &updated_settings) {
                     if let Err(err) = cfg.save() {
                         eprintln!("failed to save config: {err}");
                     }
@@ -330,9 +359,12 @@ mod tests {
     fn display_flags_do_not_force_query_mode() {
         for args in [
             &[][..],
-            &["--mem", "footprint"],
+            &["--mem", "vsz"],
             &["--agg", "flat"],
             &["--sort", "own"],
+            &["-r"],
+            &["--reverse"],
+            &["--sort", "pid", "-r"],
             &["--base10"],
             &["--update-ms", "500"],
             &["-f", "chrome"],
@@ -342,16 +374,24 @@ mod tests {
     }
 
     #[test]
+    fn pattern_conflicts_with_filter_flag() {
+        assert!(Cli::try_parse_from(["pspp", "chrome", "-f", "firefox"]).is_err());
+        assert!(Cli::try_parse_from(["pspp", "--filter", "firefox", "chrome"]).is_err());
+    }
+
+    #[test]
     fn query_opts_ignore_config_and_use_documented_defaults() {
         let opts = parse(&["--json"]).to_query_opts();
         assert_eq!(opts.mem_kind, MemKind::Rss);
         assert_eq!(opts.agg_mode, AggMode::Rollup);
         assert_eq!(opts.sort_by, SortBy::Aggregated);
+        assert!(!opts.reverse);
         assert!(!opts.base10);
 
-        let opts = parse(&["--agg", "flat", "--sort", "pid", "--base10"]).to_query_opts();
+        let opts = parse(&["--agg", "flat", "--sort", "pid", "-r", "--base10"]).to_query_opts();
         assert_eq!(opts.agg_mode, AggMode::Flat);
         assert_eq!(opts.sort_by, SortBy::Pid);
+        assert!(opts.reverse);
         assert!(opts.base10);
     }
 
@@ -414,5 +454,179 @@ mod tests {
         assert_eq!(settings.color_theme, "Nord");
         assert_eq!(settings.truecolor, ui::theme::TruecolorMode::Off);
         assert!(!settings.vim_keys && settings.force_tty);
+    }
+
+    #[test]
+    fn cli_sort_uses_natural_direction_and_reverse_inverts_cli_or_config() {
+        let desc_cfg = config::Config {
+            sort_key: "agg".into(),
+            sort_reverse: true,
+            ..config::Config::default()
+        };
+        let asc_cfg = config::Config {
+            sort_key: "pid".into(),
+            sort_reverse: false,
+            ..config::Config::default()
+        };
+
+        // Explicit --sort ignores saved sort_reverse and starts in the key's natural direction.
+        for (key, expected_sort, expected_desc) in [
+            ("comm", SortBy::Comm, false),
+            ("pid", SortBy::Pid, false),
+            ("agg", SortBy::Aggregated, true),
+            ("own", SortBy::Own, true),
+        ] {
+            let from_desc = cli_and_config_to_ui_settings(&parse(&["--sort", key]), &desc_cfg);
+            assert_eq!(
+                (from_desc.sort_by, from_desc.sort_reverse),
+                (expected_sort, expected_desc),
+                "--sort {key} over desc cfg"
+            );
+            let from_asc = cli_and_config_to_ui_settings(&parse(&["--sort", key]), &asc_cfg);
+            assert_eq!(
+                (from_asc.sort_by, from_asc.sort_reverse),
+                (expected_sort, expected_desc),
+                "--sort {key} over asc cfg"
+            );
+
+            // -r inverts the CLI --sort natural direction.
+            let reversed = cli_and_config_to_ui_settings(&parse(&["--sort", key, "-r"]), &desc_cfg);
+            assert_eq!(
+                (reversed.sort_by, reversed.sort_reverse),
+                (expected_sort, !expected_desc),
+                "--sort {key} -r"
+            );
+        }
+
+        // Without --sort, -r inverts the config-loaded sort_reverse.
+        let inv_desc = cli_and_config_to_ui_settings(&parse(&["-r"]), &desc_cfg);
+        assert_eq!(
+            (inv_desc.sort_by, inv_desc.sort_reverse),
+            (SortBy::Aggregated, false)
+        );
+        let inv_asc = cli_and_config_to_ui_settings(&parse(&["--reverse"]), &asc_cfg);
+        assert_eq!((inv_asc.sort_by, inv_asc.sort_reverse), (SortBy::Pid, true));
+    }
+
+    #[test]
+    fn save_couples_sort_key_and_sort_reverse_under_cli_override() {
+        let base_cfg = config::Config {
+            sort_key: "agg".into(),
+            sort_reverse: true,
+            ..config::Config::default()
+        };
+        let initial = cli_and_config_to_ui_settings(&parse(&["--sort", "pid"]), &base_cfg);
+        assert_eq!(
+            (initial.sort_by, initial.sort_reverse),
+            (SortBy::Pid, false)
+        );
+
+        // Leaving CLI-overridden (Pid, false) untouched writes neither sort_key nor sort_reverse.
+        let mut untouched_cfg = base_cfg.clone();
+        apply_changed_settings_to_config(&mut untouched_cfg, &initial, &initial);
+        assert_eq!(untouched_cfg.sort_key, "agg");
+        assert!(untouched_cfg.sort_reverse);
+
+        // Changing in-TUI from (Pid, false) to (Comm, false) writes ("comm", false), not ("comm", true).
+        let mut changed_cfg = base_cfg;
+        let current = ui::UiSettings {
+            sort_by: SortBy::Comm,
+            sort_reverse: false,
+            ..initial.clone()
+        };
+        apply_changed_settings_to_config(&mut changed_cfg, &initial, &current);
+        assert_eq!(changed_cfg.sort_key, "comm");
+        assert!(!changed_cfg.sort_reverse);
+    }
+
+    #[test]
+    fn update_config_for_exit_persists_turning_save_on_exit_off_without_session_changes() {
+        // true -> false: saves save_on_exit = false ONLY, discarding transient session changes.
+        let mut cfg = config::Config {
+            agg_mode: "rollup".into(),
+            color_theme: "Default".into(),
+            base10: false,
+            save_on_exit: true,
+            ..config::Config::default()
+        };
+        let initial = ui::UiSettings {
+            save_on_exit: true,
+            ..ui::UiSettings::default()
+        };
+        let updated = ui::UiSettings {
+            save_on_exit: false,
+            agg_mode: AggMode::Flat,
+            color_theme: "Nord".into(),
+            base10: true,
+            ..initial.clone()
+        };
+        assert!(update_config_for_exit(&mut cfg, &initial, &updated));
+        assert!(!cfg.save_on_exit);
+        assert_eq!(cfg.agg_mode, "rollup");
+        assert_eq!(cfg.color_theme, "Default");
+        assert!(!cfg.base10);
+
+        // false -> false: skips saving altogether and leaves cfg untouched.
+        let mut off_cfg = config::Config {
+            save_on_exit: false,
+            agg_mode: "rollup".into(),
+            ..config::Config::default()
+        };
+        let initial_off = ui::UiSettings {
+            save_on_exit: false,
+            ..ui::UiSettings::default()
+        };
+        let updated_off = ui::UiSettings {
+            save_on_exit: false,
+            agg_mode: AggMode::Flat,
+            ..initial_off.clone()
+        };
+        assert!(!update_config_for_exit(
+            &mut off_cfg,
+            &initial_off,
+            &updated_off
+        ));
+        assert!(!off_cfg.save_on_exit);
+        assert_eq!(off_cfg.agg_mode, "rollup");
+
+        // true -> true: diffs changed session settings onto cfg and saves.
+        let mut on_cfg = config::Config::default();
+        let initial_on = ui::UiSettings::default();
+        let updated_on = ui::UiSettings {
+            agg_mode: AggMode::Flat,
+            base10: true,
+            ..initial_on.clone()
+        };
+        assert!(update_config_for_exit(
+            &mut on_cfg,
+            &initial_on,
+            &updated_on
+        ));
+        assert!(on_cfg.save_on_exit);
+        assert_eq!(on_cfg.agg_mode, "flat");
+        assert!(on_cfg.base10);
+
+        // false -> true: enables save_on_exit and persists session changes.
+        let mut reenabled_cfg = config::Config {
+            save_on_exit: false,
+            agg_mode: "rollup".into(),
+            ..config::Config::default()
+        };
+        let initial_reenabled = ui::UiSettings {
+            save_on_exit: false,
+            ..ui::UiSettings::default()
+        };
+        let updated_reenabled = ui::UiSettings {
+            save_on_exit: true,
+            agg_mode: AggMode::Flat,
+            ..initial_reenabled.clone()
+        };
+        assert!(update_config_for_exit(
+            &mut reenabled_cfg,
+            &initial_reenabled,
+            &updated_reenabled
+        ));
+        assert!(reenabled_cfg.save_on_exit);
+        assert_eq!(reenabled_cfg.agg_mode, "flat");
     }
 }
